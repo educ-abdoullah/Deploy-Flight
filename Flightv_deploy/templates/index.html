@@ -1,0 +1,1039 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Flight Alert Local</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+
+  <style>
+    .toolbar { display:flex; gap:12px; flex-wrap:wrap; align-items:end; margin:12px 0 14px; }
+    .toolbar .field { min-width:200px; }
+    .toolbar input { width:100%; }
+    .toolbar .btn { white-space:nowrap; }
+    th.sortable { cursor:pointer; user-select:none; position:relative; }
+    th.sortable .sort-ind { opacity:.6; margin-left:6px; font-size:12px; }
+    .muted-small { opacity:.75; font-size:12px; }
+    .chip { display:inline-block; padding:2px 8px; border-radius:999px; background:rgba(0,0,0,.06); }
+    .td-right { text-align:right; }
+    .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+
+    /* === Excel-like filter UI === */
+    .th-wrap { display:flex; align-items:center; gap:8px; }
+    .th-title { display:inline-flex; align-items:center; gap:6px; }
+    .filter-btn {
+      margin-left:auto;
+      width:26px; height:26px;
+      display:inline-flex; align-items:center; justify-content:center;
+      border-radius:8px;
+      border:1px solid rgba(0,0,0,.10);
+      background:rgba(255,255,255,.9);
+      cursor:pointer;
+    }
+    .filter-btn:hover { background:rgba(0,0,0,.03); }
+    .filter-btn .icon { font-size:14px; opacity:.8; line-height:1; }
+    .filter-btn.active { border-color: rgba(0,0,0,.25); background: rgba(0,0,0,.03); }
+
+    .filter-popover {
+      position:fixed;
+      z-index:9999;
+      width:320px;
+      max-height:420px;
+      overflow:hidden;
+      border:1px solid rgba(0,0,0,.12);
+      background:#fff;
+      border-radius:12px;
+      box-shadow:0 10px 28px rgba(0,0,0,.18);
+      display:none;
+    }
+    .fp-header {
+      padding:10px 12px;
+      border-bottom:1px solid rgba(0,0,0,.08);
+      display:flex;
+      align-items:center;
+      gap:10px;
+    }
+    .fp-title { font-weight:700; font-size:13px; }
+    .fp-close {
+      margin-left:auto;
+      width:28px; height:28px;
+      border-radius:10px;
+      border:1px solid rgba(0,0,0,.10);
+      background:rgba(255,255,255,.95);
+      cursor:pointer;
+    }
+
+    .fp-search { padding:10px 12px; border-bottom:1px solid rgba(0,0,0,.08); }
+    .fp-search input {
+      width:100%;
+      padding:8px 10px;
+      border-radius:10px;
+      border:1px solid rgba(0,0,0,.12);
+      outline:none;
+    }
+    .fp-body {
+      padding:8px 12px;
+      overflow:auto;
+      max-height:260px;
+    }
+    .fp-item {
+      display:flex;
+      align-items:center;
+      gap:10px;
+      padding:6px 2px;
+      font-size:13px;
+    }
+    .fp-item input { transform: translateY(1px); }
+    .fp-footer {
+      padding:10px 12px;
+      border-top:1px solid rgba(0,0,0,.08);
+      display:flex;
+      gap:8px;
+      justify-content:flex-end;
+      background:rgba(0,0,0,.01);
+    }
+    .btn-mini {
+      padding:7px 10px;
+      border-radius:10px;
+      border:1px solid rgba(0,0,0,.12);
+      background:#fff;
+      cursor:pointer;
+      font-size:13px;
+    }
+    .btn-mini.primary {
+      background:#111;
+      color:#fff;
+      border-color:#111;
+    }
+    .btn-mini.ghost { background:#fff; }
+    .filter-summary {
+      margin-top:4px;
+      font-size:12px;
+      opacity:.75;
+    }
+
+    /* small help */
+    .note { font-size:12px; opacity:.75; margin-top:6px; }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <header class="header">
+      <div>
+        <h1>Vols Paris ⇄ Chennai</h1>
+        <p class="subtitle">Recherche Kayak automatisée (aller-retour) avec filtres durée et escales.</p>
+      </div>
+
+      <form method="post" action="/close">
+        <button class="btn btn-ghost" type="submit">Fermer Chrome</button>
+      </form>
+    </header>
+
+    <section class="card">
+      <div class="card-title">
+        <h2>Paramètres</h2>
+        <span class="badge">Kayak</span>
+      </div>
+
+      <form method="post" action="/run" class="form">
+        <div class="grid">
+          <div class="field">
+            <label>Origine</label>
+            <input name="origin" value="{{ cfg.origin }}">
+          </div>
+
+          <div class="field">
+            <label>Destination</label>
+            <input name="dest" value="{{ cfg.dest }}">
+          </div>
+
+          <div class="field">
+            <label>Passagers</label>
+            <input name="pax" type="number" min="1" value="{{ cfg.pax }}">
+          </div>
+
+          <div class="field">
+            <label>Départ (début)</label>
+            <input name="depart_start" type="date" value="{{ cfg.depart_start }}">
+          </div>
+
+          <div class="field">
+            <label>Départ (fin)</label>
+            <input name="depart_end" type="date" value="{{ cfg.depart_end }}">
+          </div>
+
+          <div class="field">
+            <label>Retour (début)</label>
+            <input name="return_start" type="date" value="{{ cfg.return_start }}">
+          </div>
+
+          <div class="field">
+            <label>Retour (fin)</label>
+            <input name="return_end" type="date" value="{{ cfg.return_end }}">
+          </div>
+
+          <div class="field">
+            <label>Escale max</label>
+            <input name="max_stops" type="number" min="0" value="{{ cfg.max_stops }}">
+          </div>
+
+          <div class="field">
+            <label>Durée max (heures)</label>
+            <input name="max_duration_h" type="number" min="1" value="{{ cfg.max_duration_h }}">
+          </div>
+
+          <!-- Dropdown multi-sélection (exclusion compagnies) -->
+          <div class="field" style="grid-column: 1 / -1;">
+            <label>Exclure compagnies (Kayak)</label>
+
+            <div class="multi-dd" id="excludeDd">
+              <button type="button" class="multi-dd-btn" aria-haspopup="listbox" aria-expanded="false">
+                <span class="multi-dd-label" id="excludeDdLabel">Aucune</span>
+                <span class="multi-dd-caret">▾</span>
+              </button>
+
+              <div class="multi-dd-menu" role="listbox" aria-multiselectable="true">
+                <label class="multi-dd-item">
+                  <input type="checkbox" name="exclude_airlines" value="AI"
+                         {% if 'AI' in cfg.exclude_airlines %}checked{% endif %}>
+                  <span>Air India (AI)</span>
+                </label>
+
+                <label class="multi-dd-item">
+                  <input type="checkbox" name="exclude_airlines" value="BA"
+                         {% if 'BA' in cfg.exclude_airlines %}checked{% endif %}>
+                  <span>British Airways (BA)</span>
+                </label>
+
+                <label class="multi-dd-item">
+                  <input type="checkbox" name="exclude_airlines" value="LH"
+                         {% if 'LH' in cfg.exclude_airlines %}checked{% endif %}>
+                  <span>Lufthansa (LH)</span>
+                </label>
+
+                <div class="multi-dd-actions">
+                  <button type="button" class="btn btn-ghost btn-sm" data-action="clear">Tout décocher</button>
+                  <button type="button" class="btn btn-primary btn-sm" data-action="close">OK</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="muted-small" style="margin-top:6px;">
+              Sélectionne 0, 1, 2 ou 3 compagnies à exclure.
+            </div>
+          </div>
+          <!-- /Dropdown multi-sélection -->
+
+        </div>
+
+        <div class="actions">
+          <button class="btn btn-primary" type="submit">Lancer la recherche</button>
+          <p class="hint">La page se met à jour à la fin. Chrome va naviguer pendant l’exécution.</p>
+        </div>
+      </form>
+    </section>
+
+    <section class="card">
+      <div class="card-title">
+        <h2>Résultats</h2>
+        {% if last.status %}
+          <span class="status-pill {{ 'ok' if last.status == 'DONE' else 'run' if last.status == 'RUNNING' else 'idle' }}">
+            {{ last.status }}
+          </span>
+        {% endif %}
+      </div>
+
+      {% if last.run_at %}
+        <div class="meta">
+          <div class="meta-item">
+            <span class="meta-label">Dernière exécution</span>
+            <span class="meta-value">{{ last.run_at }}</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-label">Offres visibles</span>
+            <span class="meta-value"><span id="countVisible">{{ last.offers|length }}</span> / {{ last.offers|length }}</span>
+          </div>
+          <div class="meta-item rejected-click"
+     role="button"
+     tabindex="0"
+     onclick="window.location.href='/rejected'"
+     onkeydown="if(event.key==='Enter' || event.key===' '){ event.preventDefault(); window.location.href='/rejected'; }"
+     title="Ouvrir l'historique des offres rejetées">
+  <span class="meta-label">Offres rejetées</span>
+  <span class="meta-value">
+    {{ last.rejected|length }}
+    <span class="muted-small" style="margin-left:8px;">(historique)</span>
+  </span>
+</div>
+
+          
+        </div>
+      {% else %}
+        <p class="empty">Aucune exécution pour le moment. Clique sur “Lancer la recherche”.</p>
+      {% endif %}
+
+      {% if last.offers and last.offers|length > 0 %}
+
+        <div class="toolbar">
+          <div class="field">
+            <label>Recherche globale</label>
+            <input id="q" placeholder="ex: Air India, 2026-07-06, Direct...">
+            <div class="muted-small">Tri: clique sur les en-têtes. Filtre Excel: loupe sur chaque colonne.</div>
+          </div>
+
+          <button class="btn btn-ghost" type="button" id="btnReset">Reset</button>
+
+          <button class="btn btn-ghost" type="button" id="btnExportPdf">
+            Exporter PDF (tri prix)
+          </button>
+
+          <button class="btn btn-primary" type="button" id="btnOutlookPdf">
+            Envoyer Outlook (auto)
+          </button>
+        </div>
+
+        <div class="note">
+          Filtrage type Excel: clique sur la loupe de la colonne → coche/décoche les valeurs. Recherche dans la liste possible.
+        </div>
+
+        <div class="table-wrap">
+          <table id="offersTable">
+            <thead>
+              <tr>
+                <th class="sortable" data-key="depart_date" data-filter-key="depart_date">
+                  <div class="th-wrap">
+                    <span class="th-title">Départ <span class="sort-ind" aria-hidden="true"></span></span>
+                    <button class="filter-btn" type="button" data-filter-btn="depart_date" title="Filtrer (Départ)">
+                      <span class="icon">🔍</span>
+                    </button>
+                  </div>
+                </th>
+
+                <th class="sortable" data-key="return_date" data-filter-key="return_date">
+                  <div class="th-wrap">
+                    <span class="th-title">Retour <span class="sort-ind" aria-hidden="true"></span></span>
+                    <button class="filter-btn" type="button" data-filter-btn="return_date" title="Filtrer (Retour)">
+                      <span class="icon">🔍</span>
+                    </button>
+                  </div>
+                </th>
+
+                <th class="sortable" data-key="companies" data-filter-key="companies">
+                  <div class="th-wrap">
+                    <span class="th-title">Compagnies <span class="sort-ind" aria-hidden="true"></span></span>
+                    <button class="filter-btn" type="button" data-filter-btn="companies" title="Filtrer (Compagnies)">
+                      <span class="icon">🔍</span>
+                    </button>
+                  </div>
+                </th>
+
+                <th class="sortable td-right" data-key="ppp_num" data-filter-key="price_per_person_text">
+                  <div class="th-wrap">
+                    <span class="th-title">Prix / personne <span class="sort-ind" aria-hidden="true"></span></span>
+                    <button class="filter-btn" type="button" data-filter-btn="price_per_person_text" title="Filtrer (Prix / personne)">
+                      <span class="icon">🔍</span>
+                    </button>
+                  </div>
+                </th>
+
+                <th class="sortable td-right" data-key="total_num" data-filter-key="total_price_text">
+                  <div class="th-wrap">
+                    <span class="th-title">Prix total <span class="sort-ind" aria-hidden="true"></span></span>
+                    <button class="filter-btn" type="button" data-filter-btn="total_price_text" title="Filtrer (Prix total)">
+                      <span class="icon">🔍</span>
+                    </button>
+                  </div>
+                </th>
+
+                <th class="sortable" data-key="duration_min" data-filter-key="duration_text">
+                  <div class="th-wrap">
+                    <span class="th-title">Durée <span class="sort-ind" aria-hidden="true"></span></span>
+                    <button class="filter-btn" type="button" data-filter-btn="duration_text" title="Filtrer (Durée)">
+                      <span class="icon">🔍</span>
+                    </button>
+                  </div>
+                </th>
+
+                <th class="sortable" data-key="stops" data-filter-key="stops_text">
+                  <div class="th-wrap">
+                    <span class="th-title">Escales <span class="sort-ind" aria-hidden="true"></span></span>
+                    <button class="filter-btn" type="button" data-filter-btn="stops_text" title="Filtrer (Escales)">
+                      <span class="icon">🔍</span>
+                    </button>
+                  </div>
+                </th>
+
+                <th class="td-right">Action</th>
+
+
+              </tr>
+            </thead>
+
+            <tbody>
+              {% for o in last.offers %}
+                <tr class="offer-row"
+                    data-depart="{{ o.depart_date }}"
+                    data-return="{{ o.return_date }}"
+                    data-companies="{{ (o.companies or '')|e }}"
+                    data-ppp="{{ (o.price_per_person_text or '')|e }}"
+                    data-total="{{ (o.total_price_text or '')|e }}"
+                    data-duration="{{ (o.duration_text or '')|e }}"
+                    data-duration-min="{{ o.duration_min if o.duration_min is not none else '' }}"
+                    data-stops="{{ o.stops if o.stops is not none else '' }}"
+                    data-stops-text="{{ (o.stops_text or '')|e }}"
+                    data-url="{{ o.url|e }}"
+                >
+                  <td class="mono">{{ o.depart_date }}</td>
+                  <td class="mono">{{ o.return_date }}</td>
+                  <td>
+                    {% if o.companies %}
+                      {{ o.companies }}
+                    {% else %}
+                      <span class="chip">N/A</span>
+                    {% endif %}
+                  </td>
+                  <td class="td-right price">{{ o.price_per_person_text or '—' }}</td>
+                  <td class="td-right">{{ o.total_price_text or '—' }}</td>
+                  <td>{{ o.duration_text or '—' }}</td>
+                  <td>{{ o.stops_text or '—' }}</td>
+                  <td class="td-right">
+  <a class="link-btn" href="{{ o.url }}" target="_blank" rel="noopener">Ouvrir</a>
+  <button class="btn-mini ghost"
+          type="button"
+          onclick="deleteOfferRow(this)"
+          style="margin-left:8px;">
+    Supprimer
+  </button>
+</td>
+
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+      {% elif last.run_at %}
+        <p class="empty">Aucune offre valide trouvée avec tes filtres.</p>
+      {% endif %}
+
+      {% if last.rejected and last.rejected|length > 0 %}
+        <details class="details">
+          <summary>Voir pourquoi des offres ont été rejetées</summary>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Départ</th>
+                  <th>Retour</th>
+                  <th>Compagnies</th>
+                  <th>Prix / personne</th>
+                  <th>Prix total</th>
+                  <th>Durée</th>
+                  <th>Escales</th>
+                  <th>Raison</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for o in last.rejected %}
+                  <tr>
+                    <td class="mono">{{ o.depart_date }}</td>
+                    <td class="mono">{{ o.return_date }}</td>
+                    <td>{{ o.companies or '—' }}</td>
+                    <td>{{ o.price_per_person_text or '—' }}</td>
+                    <td>{{ o.total_price_text or '—' }}</td>
+                    <td>{{ o.duration_text or '—' }}</td>
+                    <td>{{ o.stops_text or '—' }}</td>
+                    <td><span class="tag">{{ o.reason }}</span></td>
+                    <td class="td-right">
+  <a class="link-btn" href="{{ o.url }}" target="_blank" rel="noopener">Ouvrir</a>
+  <button class="btn-mini ghost"
+          type="button"
+          onclick="deleteOfferRow(this)"
+          style="margin-left:8px;">
+    Supprimer
+  </button>
+</td>
+
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      {% endif %}
+
+      {% if last.diag and last.diag.events and last.diag.events|length > 0 %}
+        <details class="details">
+          <summary>Journal technique (optionnel)</summary>
+          <ul class="log">
+            {% for ev in last.diag.events[-80:] %}
+              <li>
+                <span class="tag">{{ ev.level }}</span>
+                <span class="tag">{{ ev.d1 }} → {{ ev.d2 }}</span>
+                <span class="log-msg">{{ ev.msg }}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        </details>
+      {% endif %}
+
+      {% if last.errors and last.errors|length > 0 %}
+        <details class="details details-danger">
+          <summary>Erreurs ({{ last.errors|length }})</summary>
+          <ul class="errors">
+            {% for e in last.errors[-20:] %}
+              <li>{{ e }}</li>
+            {% endfor %}
+          </ul>
+        </details>
+      {% endif %}
+    </section>
+
+    <footer class="footer">
+      <span class="muted">Abdoullah 2026</span>
+    </footer>
+  </div>
+
+  <!-- Filter popover (single instance) -->
+  <div id="filterPopover" class="filter-popover" aria-hidden="true">
+    <div class="fp-header">
+      <div class="fp-title" id="fpTitle">Filtre</div>
+      <button class="fp-close" type="button" id="fpClose" title="Fermer">✕</button>
+    </div>
+    <div class="fp-search">
+      <input id="fpSearch" placeholder="Rechercher dans les valeurs…">
+      <div class="filter-summary" id="fpSummary"></div>
+    </div>
+    <div class="fp-body" id="fpBody"></div>
+    <div class="fp-footer">
+      <button class="btn-mini ghost" type="button" id="fpClear">Tout décocher</button>
+      <button class="btn-mini ghost" type="button" id="fpAll">Tout cocher</button>
+      <button class="btn-mini primary" type="button" id="fpApply">Appliquer</button>
+    </div>
+  </div>
+
+  <script>
+    // -------------------------
+    // Helpers
+    // -------------------------
+    function normalize(s) { return (s || "").toString().toLowerCase().trim(); }
+
+    function eurToInt(s) {
+      if (!s) return null;
+      const t = s.replace(/\u202f/g, " ").replace(/\xa0/g, " ");
+      const m = t.match(/(\d[\d ]*)\s*€/);
+      if (!m) return null;
+      const num = parseInt(m[1].replace(/ /g, ""), 10);
+      return Number.isFinite(num) ? num : null;
+    }
+
+    function toIntOrNull(v) {
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    async function postJson(url, payload) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error("HTTP " + res.status + " - " + t);
+      }
+      return res;
+    }
+
+    // Visible rows payload for PDF/Outlook (tri par prix/pers)
+    function getVisibleRowsPayloadSortedByPppAsc() {
+      const rows = Array.from(document.querySelectorAll("#offersTable tbody tr.offer-row"))
+        .filter(tr => tr.style.display !== "none");
+
+      const mapped = rows.map(tr => {
+        const pppText = tr.dataset.ppp || "";
+        const totText = tr.dataset.total || "";
+        return {
+          depart_date: tr.dataset.depart || "",
+          return_date: tr.dataset.return || "",
+          companies: tr.dataset.companies || "",
+          price_per_person_text: pppText,
+          total_price_text: totText,
+          duration_text: tr.dataset.duration || "",
+          duration_min: toIntOrNull(tr.dataset.durationMin),
+          stops: toIntOrNull(tr.dataset.stops),
+          stops_text: tr.dataset.stopsText || "",
+          url: tr.dataset.url || "",
+          _ppp_num: eurToInt(pppText) ?? 10**9,
+        };
+      });
+
+      mapped.sort((a, b) => (a._ppp_num - b._ppp_num));
+      return mapped.map(({_ppp_num, ...rest}) => rest);
+    }
+
+    // -------------------------
+    // Table model + sorting + filtering
+    // -------------------------
+    const table = document.getElementById("offersTable");
+    const pop = document.getElementById("filterPopover");
+
+    const filterState = {
+      // columnKey -> Set(selected values)
+      selected: new Map(),
+      // columnKey -> Set(all values)
+      allValues: new Map(),
+    };
+
+    function getColumnValue(m, colKey) {
+      // colKey aligns with dataset fields / display texts
+      switch (colKey) {
+        case "depart_date": return m.depart_date || "";
+        case "return_date": return m.return_date || "";
+        case "companies": return m.companies || "";
+        case "price_per_person_text": return m.ppp_text || "";
+        case "total_price_text": return m.total_text || "";
+        case "duration_text": return m.duration_text || "";
+        case "stops_text": return m.stops_text || "";
+        default: return (m[colKey] ?? "").toString();
+      }
+    }
+
+    if (table) {
+      const tbody = table.querySelector("tbody");
+      const rows = Array.from(tbody.querySelectorAll(".offer-row"));
+
+      const model = rows.map((tr) => {
+        const depart_date = tr.dataset.depart || "";
+        const return_date = tr.dataset.return || "";
+        const companies = tr.dataset.companies || "";
+        const ppp_text = tr.dataset.ppp || "";
+        const total_text = tr.dataset.total || "";
+        const duration_text = tr.dataset.duration || "";
+        const stops_text = tr.dataset.stopsText || "";
+        const duration_min = toIntOrNull(tr.dataset.durationMin);
+        const stops = toIntOrNull(tr.dataset.stops);
+
+        return {
+          tr,
+          depart_date,
+          return_date,
+          companies,
+          ppp_text,
+          total_text,
+          duration_text,
+          stops_text,
+          duration_min: duration_min ?? 10**9,
+          stops: stops ?? 10**9,
+          ppp_num: eurToInt(ppp_text) ?? 10**9,
+          total_num: eurToInt(total_text) ?? 10**9,
+        };
+      });
+
+      // Build allValues per filterable column
+      const filterableCols = ["depart_date","return_date","companies","price_per_person_text","total_price_text","duration_text","stops_text"];
+      for (const col of filterableCols) {
+        const vals = new Set();
+        for (const m of model) vals.add(getColumnValue(m, col));
+        // sort as array later
+        filterState.allValues.set(col, vals);
+        // default: everything selected
+        filterState.selected.set(col, new Set(vals));
+      }
+
+      // Global search
+      const q = document.getElementById("q");
+      const btnReset = document.getElementById("btnReset");
+      const countVisible = document.getElementById("countVisible");
+
+      function isRowAllowedByExcelFilters(m) {
+        for (const col of filterableCols) {
+          const sel = filterState.selected.get(col);
+          if (!sel) continue;
+          const v = getColumnValue(m, col);
+          if (!sel.has(v)) return false;
+        }
+        return true;
+      }
+
+      function applyFilters() {
+        const qq = normalize(q?.value);
+        let visible = 0;
+
+        for (const m of model) {
+          // global haystack
+          const hay = normalize(
+            m.depart_date + " " +
+            m.return_date + " " +
+            m.companies + " " +
+            m.ppp_text + " " +
+            m.total_text + " " +
+            m.duration_text + " " +
+            m.stops_text
+          );
+
+          let ok = true;
+          if (qq && !hay.includes(qq)) ok = false;
+          if (ok && !isRowAllowedByExcelFilters(m)) ok = false;
+
+          m.tr.style.display = ok ? "" : "none";
+          if (ok) visible += 1;
+        }
+
+        if (countVisible) countVisible.textContent = String(visible);
+
+        // update filter buttons "active"
+        for (const btn of document.querySelectorAll(".filter-btn")) {
+          const col = btn.dataset.filterBtn;
+          const all = filterState.allValues.get(col);
+          const sel = filterState.selected.get(col);
+          const isActive = all && sel && sel.size !== all.size;
+          btn.classList.toggle("active", !!isActive);
+        }
+      }
+
+      q?.addEventListener("input", applyFilters);
+
+      // Sorting UI
+      function renderSorted(sortedModel) {
+        for (const m of sortedModel) tbody.appendChild(m.tr);
+      }
+
+      function setSortIndicator(th, dir) {
+        for (const oth of table.querySelectorAll("th.sortable")) {
+          if (oth !== th) {
+            oth.dataset.dir = "";
+            const oi = oth.querySelector(".sort-ind");
+            if (oi) oi.textContent = "";
+          }
+        }
+        const ind = th.querySelector(".sort-ind");
+        if (ind) ind.textContent = (dir === "asc" ? "▲" : "▼");
+      }
+
+      table.querySelectorAll("th.sortable").forEach((th) => {
+        th.addEventListener("click", (ev) => {
+          // if click on filter button, do not sort
+          if (ev.target && (ev.target.closest && ev.target.closest(".filter-btn"))) return;
+
+          const key = th.dataset.key;
+          const current = th.dataset.dir || "";
+          const dir = (current === "asc" ? "desc" : "asc");
+          th.dataset.dir = dir;
+          setSortIndicator(th, dir);
+
+          const sorted = [...model].sort((a, b) => {
+            const va = a[key];
+            const vb = b[key];
+
+            if (typeof va === "string" || typeof vb === "string") {
+              const sa = (va || "").toString();
+              const sb = (vb || "").toString();
+              return dir === "asc" ? sa.localeCompare(sb) : sb.localeCompare(sa);
+            }
+            return dir === "asc" ? (Number(va) - Number(vb)) : (Number(vb) - Number(va));
+          });
+
+          renderSorted(sorted);
+          applyFilters();
+        });
+      });
+
+      // Reset
+      btnReset?.addEventListener("click", () => {
+        if (q) q.value = "";
+
+        // reset all excel filters (everything checked)
+        for (const col of filterableCols) {
+          const all = filterState.allValues.get(col);
+          filterState.selected.set(col, new Set(all));
+        }
+
+        applyFilters();
+
+        for (const th of table.querySelectorAll("th.sortable")) {
+          th.dataset.dir = "";
+          const ind = th.querySelector(".sort-ind");
+          if (ind) ind.textContent = "";
+        }
+      });
+
+      // -------------------------
+      // Excel-like filter popover
+      // -------------------------
+      const fpTitle = document.getElementById("fpTitle");
+      const fpClose = document.getElementById("fpClose");
+      const fpSearch = document.getElementById("fpSearch");
+      const fpBody = document.getElementById("fpBody");
+      const fpSummary = document.getElementById("fpSummary");
+      const fpClear = document.getElementById("fpClear");
+      const fpAll = document.getElementById("fpAll");
+      const fpApply = document.getElementById("fpApply");
+
+      let currentCol = null;
+      let draftSelected = null;
+
+      function sortedValuesForCol(col) {
+        const vals = Array.from(filterState.allValues.get(col) || []);
+        // sort: numeric (prices) -> by eur int, else lexicographic
+        if (col === "price_per_person_text" || col === "total_price_text") {
+          vals.sort((a,b) => (eurToInt(a) ?? 10**9) - (eurToInt(b) ?? 10**9));
+          return vals;
+        }
+        vals.sort((a,b) => (a||"").localeCompare(b||""));
+        return vals;
+      }
+
+      function renderPopoverList() {
+        if (!currentCol || !draftSelected) return;
+
+        const qv = normalize(fpSearch.value);
+        fpBody.innerHTML = "";
+
+        const allVals = sortedValuesForCol(currentCol);
+        const filtered = qv ? allVals.filter(v => normalize(v).includes(qv)) : allVals;
+
+        // summary
+        const allCount = allVals.length;
+        const selCount = draftSelected.size;
+        fpSummary.textContent = `${selCount} sélectionné(s) / ${allCount}`;
+
+        for (const v of filtered) {
+          const id = "chk_" + currentCol + "_" + btoa(unescape(encodeURIComponent(v))).replace(/=+$/,"");
+          const row = document.createElement("div");
+          row.className = "fp-item";
+
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.id = id;
+          cb.checked = draftSelected.has(v);
+          cb.addEventListener("change", () => {
+            if (cb.checked) draftSelected.add(v);
+            else draftSelected.delete(v);
+            // refresh summary only
+            fpSummary.textContent = `${draftSelected.size} sélectionné(s) / ${allVals.length}`;
+          });
+
+          const lab = document.createElement("label");
+          lab.setAttribute("for", id);
+          lab.textContent = v === "" ? "—" : v;
+
+          row.appendChild(cb);
+          row.appendChild(lab);
+          fpBody.appendChild(row);
+        }
+      }
+
+      function openPopover(col, anchorBtn) {
+        currentCol = col;
+        // draft copy of current selection
+        const curSel = filterState.selected.get(col) || new Set();
+        draftSelected = new Set(curSel);
+
+        // title
+        const titles = {
+          "depart_date":"Filtre: Départ",
+          "return_date":"Filtre: Retour",
+          "companies":"Filtre: Compagnies",
+          "price_per_person_text":"Filtre: Prix / personne",
+          "total_price_text":"Filtre: Prix total",
+          "duration_text":"Filtre: Durée",
+          "stops_text":"Filtre: Escales",
+        };
+        fpTitle.textContent = titles[col] || "Filtre";
+
+        fpSearch.value = "";
+        renderPopoverList();
+
+        // position popover below button
+        const r = anchorBtn.getBoundingClientRect();
+        const left = Math.min(window.innerWidth - 340, Math.max(8, r.left - 280));
+        const top  = Math.min(window.innerHeight - 440, r.bottom + 8);
+
+        pop.style.left = left + "px";
+        pop.style.top = top + "px";
+        pop.style.display = "block";
+        pop.setAttribute("aria-hidden", "false");
+
+        setTimeout(() => fpSearch.focus(), 0);
+      }
+
+      function closePopover() {
+        pop.style.display = "none";
+        pop.setAttribute("aria-hidden", "true");
+        currentCol = null;
+        draftSelected = null;
+      }
+
+      // attach buttons
+      document.querySelectorAll(".filter-btn").forEach((btn) => {
+        btn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          const col = btn.dataset.filterBtn;
+          openPopover(col, btn);
+        });
+      });
+
+      fpClose?.addEventListener("click", closePopover);
+
+      // click outside
+      document.addEventListener("click", (ev) => {
+        if (pop.style.display === "block") {
+          const inPop = pop.contains(ev.target);
+          const inBtn = ev.target.closest && ev.target.closest(".filter-btn");
+          if (!inPop && !inBtn) closePopover();
+        }
+      });
+
+      document.addEventListener("keydown", (ev) => {
+        if (ev.key === "Escape" && pop.style.display === "block") closePopover();
+      });
+
+      fpSearch?.addEventListener("input", renderPopoverList);
+
+      fpClear?.addEventListener("click", () => {
+        if (!draftSelected) return;
+        draftSelected.clear();
+        renderPopoverList();
+      });
+
+      fpAll?.addEventListener("click", () => {
+        if (!currentCol || !draftSelected) return;
+        const all = filterState.allValues.get(currentCol) || new Set();
+        draftSelected = new Set(all);
+        renderPopoverList();
+      });
+
+      fpApply?.addEventListener("click", () => {
+        if (!currentCol || !draftSelected) return;
+
+        // if empty selection => show none (Excel behavior)
+        filterState.selected.set(currentCol, new Set(draftSelected));
+        closePopover();
+        applyFilters();
+      });
+
+      function deleteOfferRow(btn) {
+  const tr = btn.closest("tr");
+  if (!tr) return;
+
+  // retire du model
+  const idx = model.findIndex(m => m.tr === tr);
+  if (idx !== -1) model.splice(idx, 1);
+
+  // supprime du DOM
+  tr.remove();
+
+  // applique les filtres => compteur OK + affichage OK
+  applyFilters();
+}
+window.deleteOfferRow = deleteOfferRow;
+
+
+
+      // init
+      applyFilters();
+    }
+
+    // -------------------------
+    // Export PDF
+    // -------------------------
+    document.getElementById("btnExportPdf")?.addEventListener("click", async () => {
+      try {
+        const offers = getVisibleRowsPayloadSortedByPppAsc();
+        if (offers.length === 0) {
+          alert("Aucune ligne visible à exporter (filtre trop strict ?).");
+          return;
+        }
+
+        const res = await postJson("/export_pdf", { offers });
+        const blob = await res.blob();
+
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "vols_kayak_tri_prix.pdf";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(a.href);
+      } catch (e) {
+        alert("Erreur export PDF: " + e.message);
+      }
+    });
+
+    // -------------------------
+    // Outlook: IMPORTANT => route corrigée (auto send)
+    // -------------------------
+    document.getElementById("btnOutlookPdf")?.addEventListener("click", async () => {
+      try {
+        const offers = getVisibleRowsPayloadSortedByPppAsc();
+        if (offers.length === 0) {
+          alert("Aucune ligne visible à envoyer (filtre trop strict ?).");
+          return;
+        }
+
+        // ROUTE CORRIGÉE: /export_pdf_and_outlook_send
+        await postJson("/export_pdf_and_outlook_send", { offers });
+        alert("Email envoyé automatiquement via Outlook.");
+      } catch (e) {
+        alert("Erreur Outlook: " + e.message);
+      }
+    });
+
+    <!-- JS dropdown multi-sélection -->
+  
+      (function(){
+        const dd = document.getElementById("excludeDd");
+        if (!dd) return;
+
+        const btn = dd.querySelector(".multi-dd-btn");
+        const label = document.getElementById("excludeDdLabel");
+        const checks = Array.from(dd.querySelectorAll("input[type='checkbox'][name='exclude_airlines']"));
+
+        function selectedCodes() {
+          return checks.filter(c => c.checked).map(c => c.value);
+        }
+
+        function refreshLabel() {
+          const sel = selectedCodes();
+          label.textContent = sel.length ? sel.join(", ") : "Aucune";
+        }
+
+        function open() {
+          dd.classList.add("open");
+          btn.setAttribute("aria-expanded", "true");
+        }
+
+        function close() {
+          dd.classList.remove("open");
+          btn.setAttribute("aria-expanded", "false");
+        }
+
+        btn.addEventListener("click", () => {
+          dd.classList.contains("open") ? close() : open();
+        });
+
+        document.addEventListener("click", (e) => {
+          if (!dd.contains(e.target)) close();
+        });
+
+        document.addEventListener("keydown", (e) => {
+          if (e.key === "Escape") close();
+        });
+
+        checks.forEach(c => c.addEventListener("change", refreshLabel));
+
+        dd.querySelector("[data-action='clear']")?.addEventListener("click", () => {
+          checks.forEach(c => c.checked = false);
+          refreshLabel();
+        });
+
+        dd.querySelector("[data-action='close']")?.addEventListener("click", () => close());
+
+        refreshLabel();
+      })();
+  </script>
+</body>
+</html>

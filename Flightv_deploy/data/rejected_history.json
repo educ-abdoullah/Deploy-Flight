@@ -1,0 +1,158 @@
+[
+  {
+    "run_at": "2026-01-13T14:33:30",
+    "cfg": {
+      "origin": "CDG",
+      "dest": "MAA",
+      "pax": "5",
+      "depart_start": "2026-07-10",
+      "depart_end": "2026-07-10",
+      "return_start": "2026-08-30",
+      "return_end": "2026-08-30",
+      "max_stops": "1",
+      "max_duration_h": "22",
+      "exclude_airlines": [
+        "AI",
+        "BA",
+        "LH"
+      ],
+      "profile_dir": "C:\\Users\\mrabd\\AppData\\Local\\flight-alert-playwright-profile"
+    },
+    "rejected_count": 5,
+    "rejected": [
+      {
+        "depart_date": "2026-07-10",
+        "return_date": "2026-08-30",
+        "companies": "Kuwait Airways, Singapore Airlines",
+        "price_per_person_text": "910 €",
+        "total_price_text": "4 550 €",
+        "duration_text": "25h 30min",
+        "stops_text": "1 escale",
+        "url": "https://www.kayak.fr/flights/CDG-MAA/2026-07-10/2026-08-30/5adults?sort=price_a&fs=airlines%3D-AI%2CBA%2CLH%2Cflylocal%3Blayoverdur%3D-560%3Bstops%3D-2%3Bcfc%3D1",
+        "reason": "duration_min=1530 > max_duration_min=1320"
+      },
+      {
+        "depart_date": "2026-07-10",
+        "return_date": "2026-08-30",
+        "companies": "Kuwait Airways, Singapore Airlines",
+        "price_per_person_text": "1 007 €",
+        "total_price_text": "5 035 €",
+        "duration_text": "24h 45min",
+        "stops_text": "1 escale",
+        "url": "https://www.kayak.fr/flights/CDG-MAA/2026-07-10/2026-08-30/5adults?sort=price_a&fs=airlines%3D-AI%2CBA%2CLH%2Cflylocal%3Blayoverdur%3D-560%3Bstops%3D-2%3Bcfc%3D1",
+        "reason": "duration_min=1485 > max_duration_min=1320"
+      },
+      {
+        "depart_date": "2026-07-10",
+        "return_date": "2026-08-30",
+        "companies": "SriLankan Airlines, Singapore Airlines",
+        "price_per_person_text": "1 050 €",
+        "total_price_text": "5 249 €",
+        "duration_text": "25h 30min",
+        "stops_text": "1 escale",
+        "url": "https://www.kayak.fr/flights/CDG-MAA/2026-07-10/2026-08-30/5adults?sort=price_a&fs=airlines%3D-AI%2CBA%2CLH%2Cflylocal%3Blayoverdur%3D-560%3Bstops%3D-2%3Bcfc%3D1",
+        "reason": "duration_min=1530 > max_duration_min=1320"
+      },
+      {
+        "depart_date": "2026-07-10",
+        "return_date": "2026-08-30",
+        "companies": "Qatar Airways, Singapore Airlines",
+        "price_per_person_text": "1 080 €",
+        "total_price_text": "5 400 €",
+        "duration_text": "25h 30min",
+        "stops_text": "1 escale",
+        "url": "https://www.kayak.fr/flights/CDG-MAA/2026-07-10/2026-08-30/5adults?sort=price_a&fs=airlines%3D-AI%2CBA%2CLH%2Cflylocal%3Blayoverdur%3D-560%3Bstops%3D-2%3Bcfc%3D1",
+        "reason": "duration_min=1530 > max_duration_min=1320"
+      },
+      {
+        "depart_date": "2026-07-10",
+        "return_date": "2026-08-30",
+        "companies": "SriLankan Airlines, Singapore Airlines",
+        "price_per_person_text": "1 087 €",
+        "total_price_text": "5 431 €",
+        "duration_text": "24h 45min",
+        "stops_text": "1 escale",
+        "url": "https://www.kayak.fr/flights/CDG-MAA/2026-07-10/2026-08-30/5adults?sort=price_a&fs=airlines%3D-AI%2CBA%2CLH%2Cflylocal%3Blayoverdur%3D-560%3Bstops%3D-2%3Bcfc%3D1",
+        "reason": "duration_min=1485 > max_duration_min=1320"
+      }
+    ]
+  },
+  {
+    "run_at": "2026-01-13T14:30:05",
+    "cfg": {
+      "origin": "CDG",
+      "dest": "MAA",
+      "pax": "5",
+      "depart_start": "2026-07-10",
+      "depart_end": "2026-07-10",
+      "return_start": "2026-08-30",
+      "return_end": "2026-08-30",
+      "max_stops": "1",
+      "max_duration_h": "22",
+      "exclude_airlines": [
+        "AI",
+        "BA",
+        "LH"
+      ],
+      "profile_dir": "C:\\Users\\mrabd\\AppData\\Local\\flight-alert-playwright-profile"
+    },
+    "rejected_count": 5,
+    "rejected": [
+      {
+        "depart_date": "2026-07-10",
+        "return_date": "2026-08-30",
+        "companies": "Kuwait Airways, Singapore Airlines",
+        "price_per_person_text": "910 €",
+        "total_price_text": "4 550 €",
+        "duration_text": "25h 30min",
+        "stops_text": "1 escale",
+        "url": "https://www.kayak.fr/flights/CDG-MAA/2026-07-10/2026-08-30/5adults?sort=price_a&fs=airlines%3D-AI%2CBA%2CLH%2Cflylocal%3Blayoverdur%3D-560%3Bstops%3D-2%3Bcfc%3D1",
+        "reason": "duration_min=1530 > max_duration_min=1320"
+      },
+      {
+        "depart_date": "2026-07-10",
+        "return_date": "2026-08-30",
+        "companies": "Kuwait Airways, Singapore Airlines",
+        "price_per_person_text": "1 007 €",
+        "total_price_text": "5 035 €",
+        "duration_text": "24h 45min",
+        "stops_text": "1 escale",
+        "url": "https://www.kayak.fr/flights/CDG-MAA/2026-07-10/2026-08-30/5adults?sort=price_a&fs=airlines%3D-AI%2CBA%2CLH%2Cflylocal%3Blayoverdur%3D-560%3Bstops%3D-2%3Bcfc%3D1",
+        "reason": "duration_min=1485 > max_duration_min=1320"
+      },
+      {
+        "depart_date": "2026-07-10",
+        "return_date": "2026-08-30",
+        "companies": "SriLankan Airlines, Singapore Airlines",
+        "price_per_person_text": "1 050 €",
+        "total_price_text": "5 249 €",
+        "duration_text": "25h 30min",
+        "stops_text": "1 escale",
+        "url": "https://www.kayak.fr/flights/CDG-MAA/2026-07-10/2026-08-30/5adults?sort=price_a&fs=airlines%3D-AI%2CBA%2CLH%2Cflylocal%3Blayoverdur%3D-560%3Bstops%3D-2%3Bcfc%3D1",
+        "reason": "duration_min=1530 > max_duration_min=1320"
+      },
+      {
+        "depart_date": "2026-07-10",
+        "return_date": "2026-08-30",
+        "companies": "Qatar Airways, Singapore Airlines",
+        "price_per_person_text": "1 080 €",
+        "total_price_text": "5 400 €",
+        "duration_text": "25h 30min",
+        "stops_text": "1 escale",
+        "url": "https://www.kayak.fr/flights/CDG-MAA/2026-07-10/2026-08-30/5adults?sort=price_a&fs=airlines%3D-AI%2CBA%2CLH%2Cflylocal%3Blayoverdur%3D-560%3Bstops%3D-2%3Bcfc%3D1",
+        "reason": "duration_min=1530 > max_duration_min=1320"
+      },
+      {
+        "depart_date": "2026-07-10",
+        "return_date": "2026-08-30",
+        "companies": "SriLankan Airlines, Singapore Airlines",
+        "price_per_person_text": "1 087 €",
+        "total_price_text": "5 431 €",
+        "duration_text": "24h 45min",
+        "stops_text": "1 escale",
+        "url": "https://www.kayak.fr/flights/CDG-MAA/2026-07-10/2026-08-30/5adults?sort=price_a&fs=airlines%3D-AI%2CBA%2CLH%2Cflylocal%3Blayoverdur%3D-560%3Bstops%3D-2%3Bcfc%3D1",
+        "reason": "duration_min=1485 > max_duration_min=1320"
+      }
+    ]
+  }
+]

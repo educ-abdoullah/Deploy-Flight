@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Historique — Offres rejetées</title>
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+
+  <style>
+    .toolbar { display:flex; gap:12px; flex-wrap:wrap; align-items:end; margin:12px 0 14px; }
+    .toolbar .field { min-width:260px; }
+    .toolbar input { width:100%; }
+    .td-right { text-align:right; }
+    .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .muted-small { opacity:.75; font-size:12px; }
+    .tag { display:inline-block; padding:3px 8px; border-radius:999px; background:rgba(0,0,0,.06); font-size:12px; }
+    .card { background:#fff; border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:14px; margin-bottom:14px; }
+    .header { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:14px; }
+    .btn { padding:10px 12px; border-radius:12px; border:1px solid rgba(0,0,0,.12); background:#fff; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; gap:8px; }
+    .btn-primary { background:#111; color:#fff; border-color:#111; }
+    .table-wrap { overflow:auto; border-radius:14px; border:1px solid rgba(0,0,0,.08); }
+    table { border-collapse:collapse; width:100%; min-width:1100px; }
+    th, td { padding:10px 10px; border-bottom:1px solid rgba(0,0,0,.06); font-size:13px; vertical-align:top; }
+    th { text-align:left; background:rgba(0,0,0,.02); position:sticky; top:0; z-index:1; }
+    tr:hover td { background:rgba(0,0,0,.015); }
+    .link-btn { display:inline-block; padding:8px 12px; border-radius:12px; background:#1a73e8; color:#fff; text-decoration:none; font-weight:600; font-size:12px; }
+    .link-btn:hover { filter:brightness(.95); }
+    details pre { white-space:pre-wrap; word-break:break-word; background:rgba(0,0,0,.03); padding:10px; border-radius:12px; border:1px solid rgba(0,0,0,.08); }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+
+    <div class="header">
+      <div>
+        <h1>Historique — Offres rejetées</h1>
+        <div class="muted-small">
+          Exécutions: <b>{{ total_runs }}</b> — Total rejets: <b>{{ total_rejected }}</b>
+        </div>
+      </div>
+      <a class="btn btn-primary" href="/">← Retour</a>
+    </div>
+
+    <div class="card">
+      <div class="toolbar">
+        <div class="field">
+          <label>Recherche</label>
+          <input id="q" placeholder="ex: PUB, Air India, stops=2, duration_min=None, MAX_DURATION ...">
+          <div class="muted-small">Filtre sur toutes les colonnes + détails.</div>
+        </div>
+        <button class="btn" type="button" id="btnReset">Reset</button>
+      </div>
+    </div>
+
+    <div class="card">
+      {% if history and history|length > 0 %}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Run</th>
+                <th>Départ</th>
+                <th>Retour</th>
+                <th>Compagnies</th>
+                <th>€/pers</th>
+                <th>Total</th>
+                <th>Durée</th>
+                <th>Escales</th>
+                <th>Type</th>
+                <th>Raison</th>
+                <th>Détails</th>
+                <th class="td-right">Lien</th>
+              </tr>
+            </thead>
+
+            <tbody id="tbody">
+              {% for o in history %}
+                {% set details_blob = {
+                  "reject_type": o.reject_type,
+                  "reason": o.reason,
+                  "reject_details": o.reject_details,
+                  "raw_excerpt": o.raw_excerpt,
+                  "cfg": o._cfg
+                } %}
+                <tr class="row"
+                    data-hay="{{ (o.run_at ~ ' ' ~ (o.depart_date or '') ~ ' ' ~ (o.return_date or '') ~ ' ' ~ (o.companies or '') ~ ' ' ~ (o.reason or '') ~ ' ' ~ (o.reject_type or '') ~ ' ' ~ (o.raw_excerpt or ''))|lower|e }}">
+                  <td class="mono">{{ o.run_at }}</td>
+                  <td class="mono">{{ o.depart_date or "—" }}</td>
+                  <td class="mono">{{ o.return_date or "—" }}</td>
+                  <td>{{ o.companies or "—" }}</td>
+                  <td>{{ o.price_per_person_text or "—" }}</td>
+                  <td>{{ o.total_price_text or "—" }}</td>
+                  <td>{{ o.duration_text or "—" }}</td>
+                  <td>{{ o.stops_text or "—" }}</td>
+                  <td><span class="tag">{{ o.reject_type or "—" }}</span></td>
+                  <td><span class="tag">{{ o.reason or "—" }}</span></td>
+
+                  <td>
+                    <details>
+                      <summary>Voir</summary>
+                      <pre>{{ details_blob | tojson(indent=2) }}</pre>
+                    </details>
+                  </td>
+
+                  <td class="td-right">
+                    {% if o.url %}
+                      <a class="link-btn" href="{{ o.url }}" target="_blank" rel="noopener">Ouvrir</a>
+                    {% else %}
+                      —
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+
+          </table>
+        </div>
+      {% else %}
+        <p>Aucun historique disponible pour le moment.</p>
+      {% endif %}
+    </div>
+
+  </div>
+
+  <script>
+    function normalize(s){ return (s||"").toString().toLowerCase().trim(); }
+
+    const q = document.getElementById("q");
+    const btnReset = document.getElementById("btnReset");
+
+    function applyFilter(){
+      const qq = normalize(q?.value);
+      document.querySelectorAll(".row").forEach(tr => {
+        const hay = tr.dataset.hay || "";
+        tr.style.display = (!qq || hay.includes(qq)) ? "" : "none";
+      });
+    }
+
+    q?.addEventListener("input", applyFilter);
+    btnReset?.addEventListener("click", () => { if (q) q.value=""; applyFilter(); });
+    applyFilter();
+  </script>
+</body>
+</html>
