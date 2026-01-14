@@ -38,6 +38,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
 
 app = Flask(__name__)
+from __future__ import annotations
 
 # -----------------------------
 # CONFIG
@@ -93,6 +94,85 @@ LAST_RESULTS: Dict[str, Any] = {
 # -----------------------------
 # HELPERS
 # -----------------------------
+
+async def extract_min_cards(page: APage, url: str, d1: str, d2: str, diag: Dict[str, Any]) -> List[Offer]:
+    if await detect_antibot(page):
+        diag["events"].append({"level": "WARN", "site": "kayak", "d1": d1, "d2": d2, "msg": "Anti-bot detected"})
+        return [Offer(
+            site="kayak", depart_date=d1, return_date=d2,
+            companies=None, price_per_person_text=None, total_price_text=None,
+            duration_text=None, stops_text=None,
+            duration_min=None, stops=None,
+            url=url, reason="BLOQUÉ (anti-bot/captcha)"
+        )]
+
+    offers: List[Offer] = []
+
+    for round_idx in range(MAX_SCROLL_ROUNDS):
+        raw_texts = await get_candidate_cards(page)
+        diag["events"].append({
+            "level": "INFO", "site": "kayak", "d1": d1, "d2": d2,
+            "msg": f"round={round_idx+1}/{MAX_SCROLL_ROUNDS} candidates={len(raw_texts)}"
+        })
+
+        parsed: List[Offer] = []
+        for txt in raw_texts:
+            if is_ad_block(txt):
+                continue
+
+            ppp, tot = extract_prices(txt)
+            if parse_price_eur(ppp) is None or parse_price_eur(tot) is None:
+                continue
+
+            companies = extract_companies(txt)
+            if not companies:
+                continue
+
+            stops_text, duration_text, stops, duration_min = extract_stops_and_duration(txt)
+
+            parsed.append(Offer(
+                site="kayak",
+                depart_date=d1,
+                return_date=d2,
+                companies=companies,
+                price_per_person_text=ppp,
+                total_price_text=tot,
+                duration_text=duration_text,
+                stops_text=stops_text,
+                duration_min=duration_min,
+                stops=stops,
+                url=url
+            ))
+
+        seen = set()
+        for o in parsed:
+            key = (o.companies, o.price_per_person_text, o.total_price_text, o.duration_text, o.stops_text)
+            if key in seen:
+                continue
+            seen.add(key)
+            offers.append(o)
+
+        if len(offers) >= MIN_CARDS_PER_PAGE:
+            break
+
+        try:
+            await page.mouse.wheel(0, SCROLL_STEP)
+        except Exception:
+            pass
+        await page.wait_for_timeout(WAIT_AFTER_SCROLL_MS)
+
+    if not offers:
+        return [Offer(
+            site="kayak", depart_date=d1, return_date=d2,
+            companies=None, price_per_person_text=None, total_price_text=None,
+            duration_text=None, stops_text=None,
+            duration_min=None, stops=None,
+            url=url, reason="Aucune card vol valide trouvée"
+        )]
+
+    return offers[:MIN_CARDS_PER_PAGE]
+
+
 
 async def _wait_kayak_results_ready(page: APage, timeout_ms: int = 30_000):
     try:
@@ -174,83 +254,6 @@ async def get_candidate_cards(page: APage) -> List[str]:
             continue
     return texts
 
-
-async def extract_min_cards(page: APage, url: str, d1: str, d2: str, diag: Dict[str, Any]) -> List[Offer]:
-    if await detect_antibot(page):
-        diag["events"].append({"level": "WARN", "site": "kayak", "d1": d1, "d2": d2, "msg": "Anti-bot detected"})
-        return [Offer(
-            site="kayak", depart_date=d1, return_date=d2,
-            companies=None, price_per_person_text=None, total_price_text=None,
-            duration_text=None, stops_text=None,
-            duration_min=None, stops=None,
-            url=url, reason="BLOQUÉ (anti-bot/captcha)"
-        )]
-
-    offers: List[Offer] = []
-
-    for round_idx in range(MAX_SCROLL_ROUNDS):
-        raw_texts = await get_candidate_cards(page)
-        diag["events"].append({
-            "level": "INFO", "site": "kayak", "d1": d1, "d2": d2,
-            "msg": f"round={round_idx+1}/{MAX_SCROLL_ROUNDS} candidates={len(raw_texts)}"
-        })
-
-        parsed: List[Offer] = []
-        for txt in raw_texts:
-            if is_ad_block(txt):
-                continue
-
-            ppp, tot = extract_prices(txt)
-            if parse_price_eur(ppp) is None or parse_price_eur(tot) is None:
-                continue
-
-            companies = extract_companies(txt)
-            if not companies:
-                continue
-
-            stops_text, duration_text, stops, duration_min = extract_stops_and_duration(txt)
-
-            parsed.append(Offer(
-                site="kayak",
-                depart_date=d1,
-                return_date=d2,
-                companies=companies,
-                price_per_person_text=ppp,
-                total_price_text=tot,
-                duration_text=duration_text,
-                stops_text=stops_text,
-                duration_min=duration_min,
-                stops=stops,
-                url=url
-            ))
-
-        seen = set()
-        for o in parsed:
-            key = (o.companies, o.price_per_person_text, o.total_price_text, o.duration_text, o.stops_text)
-            if key in seen:
-                continue
-            seen.add(key)
-            offers.append(o)
-
-        if len(offers) >= MIN_CARDS_PER_PAGE:
-            break
-
-        try:
-            await page.mouse.wheel(0, SCROLL_STEP)
-        except Exception:
-            pass
-        await page.wait_for_timeout(WAIT_AFTER_SCROLL_MS)
-
-    if not offers:
-        return [Offer(
-            site="kayak", depart_date=d1, return_date=d2,
-            companies=None, price_per_person_text=None, total_price_text=None,
-            duration_text=None, stops_text=None,
-            duration_min=None, stops=None,
-            url=url, reason="Aucune card vol valide trouvée"
-        )]
-
-    return offers[:MIN_CARDS_PER_PAGE]
 
 
 # -----------------------------
