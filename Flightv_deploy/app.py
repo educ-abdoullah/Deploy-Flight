@@ -1,47 +1,61 @@
 from __future__ import annotations
-# app.py — Version COMPLETE (corrigée)
-# - Scrape Kayak (texte cards) + anti pub
-# - Paramètre Front: exclure compagnies (AI/BA/LH) => Kayak fs=airlines=-AI,BA,LH,flylocal;...
-# - Export PDF (tableau) AVEC liens cliquables
-# - Envoi Outlook automatique HTML (tableau propre + liens)
-#   Subject: inclut la date du jour
-#   Top 8: pas deux offres avec même compagnie+jour de départ
-#
-# Pré-requis:
-#   python -m pip install --upgrade pip
-#   pip install flask playwright reportlab pywin32
-#   playwright install
+"""
+app.py — Version Render-ready (Flask + Playwright ASYNC)
+
+Objectifs:
+- Scraper Kayak en headless sur Render (Linux)
+- Filtrer pubs (eDreams / Anantara / “Annonce” etc.)
+- Filtrer définitivement certaines compagnies (Air India, British Airways) + codes parasites (ex: MUC si tu veux)
+- Générer des résultats + export PDF
+- Compatible Render:
+  - Binding sur 0.0.0.0:$PORT (via gunicorn sur Render)
+  - Profil Playwright sur /tmp (écriture autorisée)
+  - Chromium Playwright (pas channel="chrome" sur Linux)
+
+IMPORTANT:
+- Ton template index.html doit poster en POST sur /run
+- Sur Render, utilise gunicorn: `gunicorn -b 0.0.0.0:$PORT app:app`
+"""
 
 import re
 import io
 import os
 import time
-import tempfile
+import asyncio
 import datetime as dt
 from dataclasses import dataclass, asdict
 from typing import Optional, List, Dict, Any, Tuple
-from html import escape
 from urllib.parse import quote
+from html import escape
 
+from flask import Flask, render_template, request, redirect, url_for, send_file
 
-import asyncio
 from playwright.async_api import async_playwright, Page as APage
-
-MAX_TABS = 8  # <= ton "MAX ONGLET"
-HEADLESS = False  # tu peux passer True si tu veux accélérer
-
-
-from flask import Flask, render_template, request, redirect, url_for, jsonify, send_file
-from playwright.sync_api import sync_playwright, Page
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
 
+
+# -----------------------------
+# APP
+# -----------------------------
 app = Flask(__name__)
 
 # -----------------------------
-# CONFIG
+# ENV / RENDER
+# -----------------------------
+IS_RENDER = bool(os.environ.get("RENDER")) or (os.environ.get("RENDER") == "true") or bool(os.environ.get("PORT"))
+PORT = int(os.environ.get("PORT", "5000"))
+
+# Profil Playwright (Windows local / Render Linux)
+PW_PROFILE_DIR = os.environ.get("PW_PROFILE_DIR") or (
+    r"C:\Users\mrabd\AppData\Local\flight-alert-playwright-profile"
+    if os.name == "nt" else "/tmp/flight-alert-playwright-profile"
+)
+
+# -----------------------------
+# DEFAULT CONFIG
 # -----------------------------
 DEFAULT_ORIGIN = "CDG"
 DEFAULT_DEST = "MAA"
@@ -52,33 +66,27 @@ DEFAULT_DEPART_END   = "2026-07-10"
 DEFAULT_RETURN_START = "2026-08-24"
 DEFAULT_RETURN_END   = "2026-08-30"
 
-# Exclusions compagnies (Front)
-DEFAULT_EXCLUDE_AIRLINES = ["AI", "BA", "LH"]  # [] si vous voulez aucune exclusion par défaut
+DEFAULT_EXCLUDE_AIRLINES = ["AI", "BA", "LH"]  # codes IATA à exclure via filtre Kayak
 
-# Outlook
-OUTLOOK_SENDER_SMTP = "aaa@aa"
-OUTLOOK_TO = ["aa@aa"]
-
-# Kayak base filters (sans airlines) , "605001@gmail.com"
+# Kayak fs base (sans airlines)
 KAYAK_FS_BASE = "layoverdur=-560;stops=-2;cfc=1"
 
-PW_PROFILE_DIR = r"C:\Users\mrabd\AppData\Local\flight-alert-playwright-profile"
-
 # Scraping behavior
+MAX_TABS = 8
 MIN_CARDS_PER_PAGE = 15
 MAX_SCROLL_ROUNDS = 20
 SCROLL_STEP = 1400
 WAIT_AFTER_GOTO_MS = 3500
 WAIT_AFTER_SCROLL_MS = 1200
 
+
 # -----------------------------
 # GLOBAL STATE
 # -----------------------------
 STATE: Dict[str, Any] = {
-    "playwright": None,
-    "context": None,
-    "page": None,
-    "initialized": False,
+    "pw": None,          # Playwright object
+    "context": None,     # BrowserContext
+    "initialized": False
 }
 
 LAST_RESULTS: Dict[str, Any] = {
@@ -91,9 +99,340 @@ LAST_RESULTS: Dict[str, Any] = {
     "cfg": {},
 }
 
+
+# -----------------------------
+# MODEL
+# -----------------------------
+@dataclass
+class Offer:
+    site: str
+    depart_date: str
+    return_date: str
+    companies: Optional[str]
+    price_per_person_text: Optional[str]
+    total_price_text: Optional[str]
+    duration_text: Optional[str]
+    stops_text: Optional[str]
+    duration_min: Optional[int]
+    stops: Optional[int]
+    url: str
+    reason: Optional[str] = None
+
+
 # -----------------------------
 # HELPERS
 # -----------------------------
+def date_range(start: dt.date, end: dt.date):
+    d = start
+    while d <= end:
+        yield d
+        d += dt.timedelta(days=1)
+
+def normalize_spaces(txt: str) -> str:
+    if txt is None:
+        return ""
+    txt = txt.replace("\u202f", " ").replace("\xa0", " ")
+    txt = re.sub(r"[ \t]+", " ", txt)
+    return txt.strip()
+
+def parse_price_eur(txt: Optional[str]) -> Optional[int]:
+    if not txt:
+        return None
+    t = normalize_spaces(txt)
+    m = re.search(r"(\d[\d ]*)\s*€", t)
+    if not m:
+        return None
+    raw = m.group(1).replace(" ", "")
+    try:
+        return int(raw)
+    except Exception:
+        return None
+
+
+# -----------------------------
+# AD / PUB FILTER
+# -----------------------------
+AD_MARKERS = [
+    "annonce", "sponsorisé", "sponsored", "publicité",
+    "edreams",
+    "trouvez les meilleures offres sur edreams",
+    "comparez plus de 600 compagnies aériennes",
+    "anantara", "anantara hotels", "anantara hotels & resorts",
+    "seasonal splendour",
+    "hotel", "hotels", "hôtel", "hôtels", "resort", "resorts",
+]
+
+AD_REGEX = re.compile(r"(?i)\b(annonce|sponsorisé|sponsored|publicité)\b")
+
+def is_ad_block(text: str) -> bool:
+    t = normalize_spaces(text)
+    if not t:
+        return True
+    tl = t.lower()
+
+    if AD_REGEX.search(t):
+        return True
+
+    for m in AD_MARKERS:
+        if m in tl:
+            return True
+
+    return False
+
+
+# -----------------------------
+# KAYAK PARSING (TEXT-BASED)
+# -----------------------------
+RE_PRICE_PER_PERSON = re.compile(r"(\d[\d \u202f\xa0]*)\s*€\s*/\s*personne", re.IGNORECASE)
+RE_TOTAL_PRICE      = re.compile(r"(\d[\d \u202f\xa0]*)\s*€\s*au\s*total", re.IGNORECASE)
+RE_STOPS            = re.compile(r"\b(\d+)\s*escale[s]?\b", re.IGNORECASE)
+RE_DURATION         = re.compile(r"\b(\d+)\s*h(?:\s*(\d+)\s*min)?\b", re.IGNORECASE)
+
+def extract_prices(text: str) -> Tuple[Optional[str], Optional[str]]:
+    t = text or ""
+    m1 = RE_PRICE_PER_PERSON.search(t)
+    m2 = RE_TOTAL_PRICE.search(t)
+
+    ppp = None
+    tot = None
+    if m1:
+        ppp = normalize_spaces(m1.group(1)) + " €"
+    if m2:
+        tot = normalize_spaces(m2.group(1)) + " €"
+    return ppp, tot
+
+def extract_companies(text: str) -> Optional[str]:
+    lines = [normalize_spaces(x) for x in (text or "").split("\n")]
+    lines = [x for x in lines if x]
+
+    bad_contains = [
+        "enregistrer", "partager", "le meilleur choix", "le moins cher",
+        "économique", "non remboursable"
+    ]
+
+    # 1) Ligne avec virgule (souvent “Compagnie1, Compagnie2”)
+    for ln in lines:
+        lnl = ln.lower()
+        if any(b in lnl for b in bad_contains):
+            continue
+        if "€" in ln:
+            continue
+        if re.search(r"\b\d{1,2}:\d{2}\b", ln):
+            continue
+        if "," in ln and re.search(r"[A-Za-zÀ-ÿ]", ln):
+            if is_ad_block(ln):
+                continue
+            return ln[:140]
+
+    # 2) Fallback “air …”
+    for ln in lines:
+        lnl = ln.lower()
+        if "€" in ln:
+            continue
+        if re.search(r"\b\d{1,2}:\d{2}\b", ln):
+            continue
+        if "air" in lnl and not is_ad_block(ln):
+            return ln[:140]
+
+    return None
+
+def extract_stops_and_duration(text: str) -> Tuple[Optional[str], Optional[str], Optional[int], Optional[int]]:
+    t = normalize_spaces(text)
+
+    stops_text = None
+    stops = None
+    m = RE_STOPS.search(t)
+    if m:
+        stops = int(m.group(1))
+        stops_text = f"{stops} escale" if stops == 1 else f"{stops} escales"
+    else:
+        if re.search(r"\bdirect\b|\bnonstop\b|\bsans escale\b", t, re.IGNORECASE):
+            stops = 0
+            stops_text = "Direct"
+
+    durations = []
+    for mh in RE_DURATION.finditer(t):
+        h = int(mh.group(1))
+        mn = int(mh.group(2)) if mh.group(2) else 0
+        durations.append((h, mn))
+
+    duration_text = None
+    duration_min = None
+    if durations:
+        mins = [h * 60 + mn for (h, mn) in durations]
+        duration_min = max(mins)  # conservateur
+        max_idx = mins.index(duration_min)
+        h, mn = durations[max_idx]
+        duration_text = f"{h}h {mn}min" if mn else f"{h}h"
+
+    return stops_text, duration_text, stops, duration_min
+
+
+# -----------------------------
+# KAYAK URL BUILD
+# -----------------------------
+def build_kayak_fs(base_fs: str, exclude_airlines: List[str]) -> str:
+    ex = [a.strip().upper() for a in (exclude_airlines or []) if a.strip()]
+    # garde tout (pas seulement AI/BA/LH) si tu veux:
+    # ex = [a for a in ex if re.fullmatch(r"[A-Z0-9]{2,3}", a)]
+    if ex:
+        return f"airlines=-{','.join(ex)},flylocal;{base_fs}"
+    return base_fs
+
+def build_kayak_url(origin: str, dest: str, d1: str, d2: str, pax: int, base_fs: str, exclude_airlines: List[str]) -> str:
+    fs = build_kayak_fs(base_fs, exclude_airlines)
+    # IMPORTANT: on encode fs, en gardant quelques séparateurs lisibles
+    fs_encoded = quote(fs, safe="-;,=")
+    base = f"https://www.kayak.fr/flights/{origin}-{dest}/{d1}/{d2}/{pax}adults"
+    return f"{base}?sort=price_a&fs={fs_encoded}"
+
+
+# -----------------------------
+# VALIDATION / FILTRES “NE JAMAIS AFFICHER”
+# -----------------------------
+BANNED_COMPANY_SUBSTR = [
+    "air india",
+    "british airways",
+]
+BANNED_COMPANY_CODES = [
+    # si tu veux bannir des segments/codes visibles dans la zone “compagnies”
+    # "MUC",
+]
+
+def validate_offer(o: Offer, max_stops: int, max_duration_min: int) -> Tuple[bool, str]:
+    # Exclusion forte: compagnies interdites (même si Kayak “filtre” mal)
+    if o.companies:
+        comp_low = o.companies.lower()
+        if any(b in comp_low for b in BANNED_COMPANY_SUBSTR):
+            return False, "Compagnie exclue (Air India / British Airways)"
+        if any(code.lower() in comp_low for code in BANNED_COMPANY_CODES):
+            return False, "Code/segment exclu"
+
+    if o.reason:
+        return False, o.reason
+    if not o.companies:
+        return False, "companies=None"
+    if parse_price_eur(o.price_per_person_text) is None:
+        return False, "price_per_person=None"
+    if parse_price_eur(o.total_price_text) is None:
+        return False, "total_price=None"
+    if o.stops is None:
+        return False, "stops=None"
+    if o.duration_min is None:
+        return False, "duration_min=None"
+    if o.stops > max_stops:
+        return False, f"stops={o.stops} > max_stops={max_stops}"
+    if o.duration_min > max_duration_min:
+        return False, f"duration_min={o.duration_min} > max_duration_min={max_duration_min}"
+    return True, "OK"
+
+
+# -----------------------------
+# PLAYWRIGHT (ASYNC) — Render-ready
+# -----------------------------
+async def ensure_browser_async(diag: Dict[str, Any]) -> None:
+    if STATE.get("initialized") and STATE.get("context"):
+        return
+
+    os.makedirs(PW_PROFILE_DIR, exist_ok=True)
+
+    diag["events"].append({
+        "level": "INFO", "site": "kayak", "d1": "-", "d2": "-",
+        "msg": f"Launching Playwright persistent context (profile={PW_PROFILE_DIR}) headless={True if IS_RENDER else False}"
+    })
+
+    pw = await async_playwright().start()
+
+    # Render/Linux: PAS de channel="chrome"
+    context = await pw.chromium.launch_persistent_context(
+        user_data_dir=PW_PROFILE_DIR,
+        headless=True if IS_RENDER else True,  # tu peux mettre False en local si tu veux voir
+        viewport={"width": 1400, "height": 900},
+        args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ],
+    )
+
+    STATE["pw"] = pw
+    STATE["context"] = context
+    STATE["initialized"] = True
+
+
+async def close_browser_async() -> None:
+    try:
+        if STATE.get("context"):
+            await STATE["context"].close()
+    except Exception:
+        pass
+    try:
+        if STATE.get("pw"):
+            await STATE["pw"].stop()
+    except Exception:
+        pass
+    STATE.update({"pw": None, "context": None, "initialized": False})
+
+
+# -----------------------------
+# WAIT READY / CARDS
+# -----------------------------
+async def detect_antibot(page: APage) -> bool:
+    try:
+        body = (await page.locator("body").inner_text(timeout=3000)).lower()
+        return any(x in body for x in ["robot", "captcha", "unusual traffic", "verify you are a human", "inhabituel"])
+    except Exception:
+        return False
+
+async def _wait_kayak_results_ready(page: APage, timeout_ms: int = 30_000) -> None:
+    # stabilise un peu la page
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+    except Exception:
+        pass
+    try:
+        await page.wait_for_load_state("networkidle", timeout=timeout_ms)
+    except Exception:
+        pass
+
+    start = time.time()
+    last_counts: List[int] = []
+    while (time.time() - start) * 1000 < timeout_ms:
+        try:
+            loc = page.locator("div[role='listitem'], [data-testid*='result'], div[class*='result']")
+            c = await loc.count()
+        except Exception:
+            c = 0
+
+        last_counts.append(c)
+        if len(last_counts) > 6:
+            last_counts.pop(0)
+
+        # stable et suffisamment de résultats
+        if len(last_counts) >= 3 and last_counts[-1] >= 8 and last_counts[-1] == last_counts[-2] == last_counts[-3]:
+            return
+
+        await page.wait_for_timeout(600)
+
+async def get_candidate_cards(page: APage) -> List[str]:
+    loc = page.locator("div[role='listitem'], [data-testid*='result'], div[class*='result']")
+    try:
+        count = await loc.count()
+    except Exception:
+        return []
+
+    texts: List[str] = []
+    for i in range(min(count, 120)):
+        try:
+            txt = (await loc.nth(i).inner_text(timeout=1500)).strip()
+            if txt:
+                texts.append(txt)
+        except Exception:
+            continue
+    return texts
+
 
 async def extract_min_cards(page: APage, url: str, d1: str, d2: str, diag: Dict[str, Any]) -> List[Offer]:
     if await detect_antibot(page):
@@ -144,6 +483,7 @@ async def extract_min_cards(page: APage, url: str, d1: str, d2: str, diag: Dict[
                 url=url
             ))
 
+        # de-dup
         seen = set()
         for o in parsed:
             key = (o.companies, o.price_per_person_text, o.total_price_text, o.duration_text, o.stops_text)
@@ -173,379 +513,8 @@ async def extract_min_cards(page: APage, url: str, d1: str, d2: str, diag: Dict[
     return offers[:MIN_CARDS_PER_PAGE]
 
 
-
-async def _wait_kayak_results_ready(page: APage, timeout_ms: int = 30_000):
-    try:
-        await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
-    except Exception:
-        pass
-    try:
-        await page.wait_for_load_state("networkidle", timeout=timeout_ms)
-    except Exception:
-        pass
-
-    start = time.time()
-    last_counts = []
-    while (time.time() - start) * 1000 < timeout_ms:
-        try:
-            loc = page.locator("div[role='listitem'], [data-testid*='result'], div[class*='result']")
-            c = await loc.count()
-        except Exception:
-            c = 0
-
-        last_counts.append(c)
-        if len(last_counts) > 6:
-            last_counts.pop(0)
-
-        if len(last_counts) >= 3 and last_counts[-1] >= 8 and last_counts[-1] == last_counts[-2] == last_counts[-3]:
-            return
-
-        await page.wait_for_timeout(600)
-
-
-def date_range(start: dt.date, end: dt.date):
-    d = start
-    while d <= end:
-        yield d
-        d += dt.timedelta(days=1)
-
-def normalize_spaces(txt: str) -> str:
-    if txt is None:
-        return ""
-    txt = txt.replace("\u202f", " ").replace("\xa0", " ")
-    txt = re.sub(r"[ \t]+", " ", txt)
-    return txt.strip()
-
-def parse_price_eur(txt: Optional[str]) -> Optional[int]:
-    if not txt:
-        return None
-    t = normalize_spaces(txt)
-    m = re.search(r"(\d[\d ]*)\s*€", t)
-    if not m:
-        return None
-    raw = m.group(1).replace(" ", "")
-    try:
-        return int(raw)
-    except Exception:
-        return None
-
-async def detect_antibot(page: APage) -> bool:
-    try:
-        body = (await page.locator("body").inner_text(timeout=3000)).lower()
-        return any(x in body for x in ["robot", "captcha", "unusual traffic", "verify you are a human", "inhabituel"])
-    except Exception:
-        return False
-
-
-async def get_candidate_cards(page: APage) -> List[str]:
-    loc = page.locator("div[role='listitem'], [data-testid*='result'], div[class*='result']")
-    try:
-        count = await loc.count()
-    except Exception:
-        return []
-
-    texts: List[str] = []
-    for i in range(min(count, 120)):
-        try:
-            txt = (await loc.nth(i).inner_text(timeout=1500)).strip()
-            if txt:
-                texts.append(txt)
-        except Exception:
-            continue
-    return texts
-
-
-
 # -----------------------------
-# KAYAK URL BUILD (CORRECT)
-# -----------------------------
-
-from urllib.parse import quote
-
-def build_kayak_fs(base_fs: str, exclude_airlines: list[str]) -> str:
-    ex = [a.strip().upper() for a in (exclude_airlines or []) if a.strip()]
-    ex = [a for a in ex if a in ("AI", "BA", "LH")]
-    if ex:
-        return f"airlines=-{','.join(ex)},flylocal;{base_fs}"
-    return base_fs
-
-def build_kayak_url(origin, dest, d1, d2, pax, base_fs, exclude_airlines):
-    fs = build_kayak_fs(base_fs, exclude_airlines)
-    fs_encoded = quote(fs, safe='-')   # garde seulement '-' non encodé
-    base = f"https://www.kayak.fr/flights/{origin}-{dest}/{d1}/{d2}/{pax}adults"
-    return f"{base}?sort=price_a&fs={fs_encoded}"
-
-
-
-# -----------------------------
-# OFFER MODEL
-# -----------------------------
-@dataclass
-class Offer:
-    site: str
-    depart_date: str
-    return_date: str
-    companies: Optional[str]
-    price_per_person_text: Optional[str]
-    total_price_text: Optional[str]
-    duration_text: Optional[str]
-    stops_text: Optional[str]
-    duration_min: Optional[int]
-    stops: Optional[int]
-    url: str
-    reason: Optional[str] = None
-
-def validate_offer(o: Offer, max_stops: int, max_duration_min: int) -> Tuple[bool, str]:
-
-    # 🔴 BLOCAGE compagnies interdites
-    banned = ["air india", "british airways","MUC",", MUC",",MUC"," ,MUC",", MUC ",", MUC "]
-    if o.companies:
-        comp = o.companies.lower()
-        if any(b in comp for b in banned):
-            return False, "Compagnie exclue (Air India / British)"
-
-    if o.reason:
-        return False, o.reason
-    if not o.companies:
-        return False, "companies=None"
-    if parse_price_eur(o.price_per_person_text) is None:
-        return False, "price_per_person=None"
-    if parse_price_eur(o.total_price_text) is None:
-        return False, "total_price=None"
-    if o.stops is None:
-        return False, "stops=None"
-    if o.duration_min is None:
-        return False, "duration_min=None"
-    if o.stops > max_stops:
-        return False, f"stops={o.stops} > max_stops={max_stops}"
-    if o.duration_min > max_duration_min:
-        return False, f"duration_min={o.duration_min} > max_duration_min={max_duration_min}"
-
-    return True, "OK"
-
-
-# -----------------------------
-# PLAYWRIGHT: SINGLE CHROME
-# -----------------------------
-async def ensure_browser_async(diag: Dict[str, Any]):
-    if STATE.get("initialized") and STATE.get("context"):
-        return
-
-    diag["events"].append({
-        "level": "INFO", "site": "kayak", "d1": "-", "d2": "-",
-        "msg": "Launching Chrome (persistent profile) [ASYNC]..."
-    })
-
-    pw = await async_playwright().start()
-    context = pw.chromium.launch(
-    headless=True
-)
-
-
-
-    STATE["playwright"] = pw
-    STATE["context"] = context
-    STATE["initialized"] = True
-
-
-PW_PROFILE_DIR = os.environ.get("PW_PROFILE_DIR") or (
-    r"C:\Users\mrabd\AppData\Local\flight-alert-playwright-profile"
-    if os.name == "nt" else "/tmp/flight-alert-playwright-profile"
-)
-
-def ensure_browser(diag):
-    if STATE["initialized"] and STATE["context"] and STATE["page"]:
-        return
-
-    pw = sync_playwright().start()
-
-    launch_kwargs = dict(
-        user_data_dir=PW_PROFILE_DIR,
-        headless=(os.environ.get("RENDER") == "true"),  # headless sur Render
-        viewport={"width": 1400, "height": 900},
-        args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-extensions",
-            "--no-first-run",
-            "--no-default-browser-check",
-        ],
-    )
-
-    # Windows: tu peux garder Chrome si tu veux
-    if os.name == "nt":
-        context = pw.chromium.launch_persistent_context(channel="chrome", **launch_kwargs)
-    else:
-        context = pw.chromium.launch_persistent_context(**launch_kwargs)
-
-    page = context.new_page()
-    STATE.update({"playwright": pw, "context": context, "page": page, "initialized": True})
-
-
-
-async def close_browser_async():
-    try:
-        if STATE.get("context"):
-            await STATE["context"].close()
-    except Exception:
-        pass
-    try:
-        if STATE.get("playwright"):
-            await STATE["playwright"].stop()
-    except Exception:
-        pass
-    STATE.update({
-        "playwright": None,
-        "context": None,
-        "page": None,
-        "initialized": False
-    })
-
-
-def close_browser():
-    # wrapper sync -> async (même nom)
-    asyncio.run(close_browser_async())
-
-
-# -----------------------------
-# KAYAK CARD PARSING (TEXT-BASED)
-# -----------------------------
-RE_PRICE_PER_PERSON = re.compile(r"(\d[\d \u202f\xa0]*)\s*€\s*/\s*personne", re.IGNORECASE)
-RE_TOTAL_PRICE      = re.compile(r"(\d[\d \u202f\xa0]*)\s*€\s*au\s*total", re.IGNORECASE)
-RE_STOPS            = re.compile(r"\b(\d+)\s*escale[s]?\b", re.IGNORECASE)
-RE_DURATION         = re.compile(r"\b(\d+)\s*h(?:\s*(\d+)\s*min)?\b", re.IGNORECASE)
-
-import re
-
-# Marqueurs pubs / agrégateurs / hôtels (lowercase)
-AD_MARKERS = [
-    # pubs génériques
-    "annonce", "sponsorisé", "sponsored", "publicité", "ad ",
-    "voir l'offre", "voir loffre", "offres exclusives", "offers exclusives",
-    "prix avantageux", "service haut de gamme", "seasonal splendour",
-
-    # agrégateurs / OTA (exemples)
-    "edreams",
-    "trouvez les meilleures offres sur edreams",
-    "comparez plus de 600 compagnies aériennes",
-
-    # hôtels / resorts (exemples)
-    "anantara", "anantara hotels", "anantara hotels & resorts",
-    "resort", "resorts", "hotel", "hotels", "hôtel", "hôtels",
-]
-
-# Regex “Annonce” plus robuste (et séparateurs fréquents)
-AD_REGEX = re.compile(
-    r"(?i)\b(annonce|sponsorisé|sponsored|publicité)\b"
-)
-
-def is_ad_block(text: str) -> bool:
-    t = normalize_spaces(text)
-    if not t:
-        return True
-
-    tl = t.lower()
-
-    # 1) Très discriminant: présence explicite "Annonce" / "Sponsored" / etc.
-    if AD_REGEX.search(t):
-        return True
-
-    # 2) Marqueurs connus
-    for m in AD_MARKERS:
-        if m in tl:
-            return True
-
-    # 3) Cas “cards non-vol” typiques: beaucoup de marketing et pas de structure vol
-    #    (garde-fou: si ça contient "edreams" ou "anantara" on a déjà filtré, ici c'est bonus)
-    marketing_hits = 0
-    for kw in ["offres", "exclusives", "comparez", "meilleures", "splendour"]:
-        if kw in tl:
-            marketing_hits += 1
-    if marketing_hits >= 2 and ("€" in tl) and ("escale" in tl) and ("vol" in tl):
-        # Si vous voulez être encore plus strict, laissez True.
-        # Ici on le met en pub si la card ressemble à un encart marketing.
-        return True
-
-    return False
-
-
-def extract_prices(text: str) -> Tuple[Optional[str], Optional[str]]:
-    t = text or ""
-    m1 = RE_PRICE_PER_PERSON.search(t)
-    m2 = RE_TOTAL_PRICE.search(t)
-
-    ppp = None
-    tot = None
-    if m1:
-        ppp = normalize_spaces(m1.group(1)) + " €"
-    if m2:
-        tot = normalize_spaces(m2.group(1)) + " €"
-    return ppp, tot
-
-def extract_companies(text: str) -> Optional[str]:
-    lines = [normalize_spaces(x) for x in (text or "").split("\n")]
-    lines = [x for x in lines if x]
-
-    bad_contains = ["enregistrer", "partager", "le meilleur choix", "le moins cher", "économique", "non remboursable"]
-    for ln in lines:
-        lnl = ln.lower()
-        if any(b in lnl for b in bad_contains):
-            continue
-        if "€" in ln:
-            continue
-        if re.search(r"\b\d{1,2}:\d{2}\b", ln):
-            continue
-        if "," in ln and re.search(r"[A-Za-zÀ-ÿ]", ln):
-            if is_ad_block(ln):
-                continue
-            return ln[:140]
-
-    for ln in lines:
-        lnl = ln.lower()
-        if "€" in ln:
-            continue
-        if re.search(r"\b\d{1,2}:\d{2}\b", ln):
-            continue
-        if "air" in lnl and not is_ad_block(ln):
-            return ln[:140]
-
-    return None
-
-def extract_stops_and_duration(text: str) -> Tuple[Optional[str], Optional[str], Optional[int], Optional[int]]:
-    t = normalize_spaces(text)
-
-    stops_text = None
-    stops = None
-    m = RE_STOPS.search(t)
-    if m:
-        stops = int(m.group(1))
-        stops_text = f"{stops} escale" if stops == 1 else f"{stops} escales"
-    else:
-        if re.search(r"\bdirect\b|\bnonstop\b|\bsans escale\b", t, re.IGNORECASE):
-            stops = 0
-            stops_text = "Direct"
-
-    durations = []
-    for mh in RE_DURATION.finditer(t):
-        h = int(mh.group(1))
-        mn = int(mh.group(2)) if mh.group(2) else 0
-        durations.append((h, mn))
-
-    duration_text = None
-    duration_min = None
-    if durations:
-        mins = [h * 60 + mn for (h, mn) in durations]
-        duration_min = max(mins)  # conservateur
-        max_idx = mins.index(duration_min)
-        h, mn = durations[max_idx]
-        duration_text = f"{h}h {mn}min" if mn else f"{h}h"
-
-    return stops_text, duration_text, stops, duration_min
-
-
-
-# -----------------------------
-# RUN
+# RUN CORE
 # -----------------------------
 async def _run_one_pair_on_page(page: APage, cfg: Dict[str, Any], d1s: str, d2s: str, diag: Dict[str, Any]):
     origin = cfg["origin"]
@@ -573,8 +542,8 @@ async def _run_one_pair_on_page(page: APage, cfg: Dict[str, Any], d1s: str, d2s:
 
     raw_offers = await extract_min_cards(page, url, d1s, d2s, diag)
 
-    valid_out = []
-    rejected_out = []
+    valid_out: List[Offer] = []
+    rejected_out: List[Offer] = []
 
     for o in raw_offers:
         ok, reason = validate_offer(o, max_stops, max_duration_min)
@@ -596,7 +565,6 @@ async def run_kayak_pairs_async(cfg: Dict[str, Any]) -> Dict[str, Any]:
     await ensure_browser_async(diag)
     context = STATE["context"]
 
-    # 1) Build jobs
     depart_start = dt.date.fromisoformat(cfg["depart_start"])
     depart_end = dt.date.fromisoformat(cfg["depart_end"])
     return_start = dt.date.fromisoformat(cfg["return_start"])
@@ -608,12 +576,10 @@ async def run_kayak_pairs_async(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
     total_pairs = len(jobs)
 
-    # 2) Queue
     q: asyncio.Queue = asyncio.Queue()
     for j in jobs:
         await q.put(j)
 
-    # 3) Worker (1 onglet = 1 page)
     async def worker(worker_id: int):
         page = await context.new_page()
         try:
@@ -622,6 +588,7 @@ async def run_kayak_pairs_async(cfg: Dict[str, Any]) -> Dict[str, Any]:
                     d1s, d2s = q.get_nowait()
                 except asyncio.QueueEmpty:
                     break
+
                 try:
                     v, r = await _run_one_pair_on_page(page, cfg, d1s, d2s, diag)
                     valid_out.extend(v)
@@ -635,7 +602,6 @@ async def run_kayak_pairs_async(cfg: Dict[str, Any]) -> Dict[str, Any]:
         finally:
             await page.close()
 
-    # 4) Run N tabs
     n = min(MAX_TABS, total_pairs) if total_pairs > 0 else 1
     tasks = [asyncio.create_task(worker(i)) for i in range(n)]
     await asyncio.gather(*tasks)
@@ -658,12 +624,11 @@ async def run_kayak_pairs_async(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def run_kayak_pairs(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    # même nom qu’avant, Flask continue d’appeler run_kayak_pairs()
     return asyncio.run(run_kayak_pairs_async(cfg))
 
 
 # -----------------------------
-# SORT / PDF / OUTLOOK
+# PDF EXPORT
 # -----------------------------
 def sort_offers_by_price_dicts(offers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     def key(o: Dict[str, Any]) -> int:
@@ -675,68 +640,31 @@ def _trunc(s: str, n: int) -> str:
     s = (s or "").strip()
     return s if len(s) <= n else s[:n-1] + "…"
 
-# Top 8: pas 2 offres avec même "companies" + même depart_date
-def _offer_key_same_company_same_day(o: Dict[str, Any]) -> Tuple[str, str]:
-    comp = (o.get("companies") or "").strip().lower()
-    dpt = (o.get("depart_date") or "").strip()
-    return (comp, dpt)
-
-def _pick_top_unique_company_same_day(offers_sorted: List[Dict[str, Any]], limit: int = 15) -> List[Dict[str, Any]]:
-    picked: List[Dict[str, Any]] = []
-    seen = set()
-    for o in offers_sorted:
-        k = _offer_key_same_company_same_day(o)
-        if k in seen:
-            continue
-        seen.add(k)
-        picked.append(o)
-        if len(picked) >= limit:
-            break
-    return picked
-
-
-
 def _mk_pdf_bytes_from_dicts(offers: List[Dict[str, Any]]) -> bytes:
-    """
-    PDF plus pro:
-    - marges correctes
-    - tableau avec grille fine
-    - en-tête gris clair
-    - alternance de lignes (gris très léger)
-    - plus d’espace entre les lignes
-    - lien "Ouvrir" simple (pas de gros bouton)
-    """
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
     w, h = A4
 
-    # --- Layout (en points) ---
     left = 14 * mm
     right = 14 * mm
     top = 16 * mm
     bottom = 14 * mm
     table_w = w - left - right
 
-    # --- Typo ---
     title = "Vols Kayak (triés par prix / personne)"
     c.setFont("Helvetica-Bold", 14)
     c.drawString(left, h - top, title)
 
-    # Petite ligne de contexte (optionnel)
     c.setFont("Helvetica", 9)
     c.drawString(left, h - top - 6 * mm, f"Export généré le {dt.datetime.now().strftime('%d/%m/%Y %H:%M')}")
 
-    # --- Table geometry ---
-    y = h - top - 14 * mm  # début du tableau sous le titre
+    y = h - top - 14 * mm
     header_h = 8 * mm
-    row_h = 7 * mm  # + d’espace entre les lignes
+    row_h = 7 * mm
 
-    # Colonnes (largeurs en mm -> converties en points)
-    # Ajuste si tu veux plus de place sur "Compagnies"
-    col_w_mm = [20, 20, 58, 16, 16, 18, 16, 14]  # total = 178mm
+    col_w_mm = [20, 20, 58, 16, 16, 18, 16, 14]
     col_w = [x * mm for x in col_w_mm]
 
-    # Si total != table_w, on scale proportionnellement
     total_cols = sum(col_w)
     if abs(total_cols - table_w) > 1:
         scale = table_w / total_cols
@@ -745,21 +673,17 @@ def _mk_pdf_bytes_from_dicts(offers: List[Dict[str, Any]]) -> bytes:
     headers = ["Départ", "Retour", "Compagnies", "€/pers", "Total", "Durée", "Escales", "Lien"]
 
     def _draw_header(y_top: float):
-        # fond header (gris clair)
         c.setFillColorRGB(0.94, 0.94, 0.94)
         c.rect(left, y_top - header_h, table_w, header_h, fill=1, stroke=0)
 
-        # texte header
         c.setFillColorRGB(0, 0, 0)
         c.setFont("Helvetica-Bold", 9)
 
         x = left
         for i, hd in enumerate(headers):
-            # padding interne
             c.drawString(x + 2.2 * mm, y_top - header_h + 2.6 * mm, hd)
             x += col_w[i]
 
-        # bordure + lignes verticales fines
         c.setLineWidth(0.4)
         c.setStrokeColorRGB(0.70, 0.70, 0.70)
         c.rect(left, y_top - header_h, table_w, header_h, fill=0, stroke=1)
@@ -769,7 +693,6 @@ def _mk_pdf_bytes_from_dicts(offers: List[Dict[str, Any]]) -> bytes:
             x += col_w[i]
             c.line(x, y_top - header_h, x, y_top)
 
-        # ligne sous header
         c.setStrokeColorRGB(0.65, 0.65, 0.65)
         c.line(left, y_top - header_h, left + table_w, y_top - header_h)
 
@@ -785,31 +708,24 @@ def _mk_pdf_bytes_from_dicts(offers: List[Dict[str, Any]]) -> bytes:
         return _trunc((s or "").strip(), max_chars)
 
     _draw_header(y)
-
     y -= header_h
 
-    # lignes (grille + alternance)
     c.setFont("Helvetica", 9)
     c.setLineWidth(0.3)
-    c.setStrokeColorRGB(0.80, 0.80, 0.80)
 
     for idx, o in enumerate(offers):
-        # saut de page si besoin
         if y - row_h < bottom:
             y = _new_page()
             _draw_header(y)
             y -= header_h
 
-        # alternance légère
         if idx % 2 == 1:
             c.setFillColorRGB(0.98, 0.98, 0.98)
             c.rect(left, y - row_h, table_w, row_h, fill=1, stroke=0)
 
-        # bordure ligne
         c.setStrokeColorRGB(0.85, 0.85, 0.85)
         c.rect(left, y - row_h, table_w, row_h, fill=0, stroke=1)
 
-        # vertical lines
         x = left
         for i in range(len(col_w) - 1):
             x += col_w[i]
@@ -824,77 +740,39 @@ def _mk_pdf_bytes_from_dicts(offers: List[Dict[str, Any]]) -> bytes:
         stp    = _cell_text(o.get("stops_text", ""), 12)
         url    = (o.get("url", "") or "").strip()
 
-        # baseline texte
         text_y = y - row_h + 2.4 * mm
         x = left
 
-        # Col 1: depart
         c.setFillColorRGB(0, 0, 0)
-        c.drawString(x + 2.2 * mm, text_y, depart)
-        x += col_w[0]
+        c.drawString(x + 2.2 * mm, text_y, depart); x += col_w[0]
+        c.drawString(x + 2.2 * mm, text_y, ret);    x += col_w[1]
+        c.drawString(x + 2.2 * mm, text_y, comp);   x += col_w[2]
 
-        # Col 2: retour
-        c.drawString(x + 2.2 * mm, text_y, ret)
-        x += col_w[1]
+        c.drawRightString(x + col_w[3] - 2.2 * mm, text_y, ppp); x += col_w[3]
+        c.drawRightString(x + col_w[4] - 2.2 * mm, text_y, tot); x += col_w[4]
 
-        # Col 3: compagnies
-        c.drawString(x + 2.2 * mm, text_y, comp)
-        x += col_w[2]
+        c.drawString(x + 2.2 * mm, text_y, dur); x += col_w[5]
+        c.drawString(x + 2.2 * mm, text_y, stp); x += col_w[6]
 
-        # Col 4: €/pers (align right)
-        c.drawRightString(x + col_w[3] - 2.2 * mm, text_y, ppp)
-        x += col_w[3]
-
-        # Col 5: total (align right)
-        c.drawRightString(x + col_w[4] - 2.2 * mm, text_y, tot)
-        x += col_w[4]
-
-        # Col 6: durée
-        c.drawString(x + 2.2 * mm, text_y, dur)
-        x += col_w[5]
-
-        # Col 7: escales
-        c.drawString(x + 2.2 * mm, text_y, stp)
-        x += col_w[6]
-
-        # Col 8: lien (simple, discret)
         link_label = "Ouvrir" if url else "—"
-        # bleu discret (pas un gros bouton)
         if url:
             c.setFillColorRGB(0.10, 0.35, 0.75)
         else:
             c.setFillColorRGB(0.45, 0.45, 0.45)
 
-        # centre dans la dernière colonne
-        link_x0 = x
         label_w = c.stringWidth(link_label, "Helvetica", 9)
-        label_x = link_x0 + (col_w[7] - label_w) / 2
-        c.setFont("Helvetica", 9)
+        label_x = x + (col_w[7] - label_w) / 2
         c.drawString(label_x, text_y, link_label)
 
-        # zone cliquable (sur le texte seulement)
         if url:
-            c.linkURL(
-                url,
-                (label_x, text_y - 1, label_x + label_w, text_y + 9),
-                relative=0
-            )
+            c.linkURL(url, (label_x, text_y - 1, label_x + label_w, text_y + 9), relative=0)
 
-        # reset font/couleur
         c.setFillColorRGB(0, 0, 0)
-        c.setFont("Helvetica", 9)
-
-        # next row
         y -= row_h
 
     c.save()
     buf.seek(0)
     return buf.getvalue()
-
-
-# -----------------------------
-# OUTLOOK SEND (HTML) + VERIFIED
-# -----------------------------
 
 
 # -----------------------------
@@ -953,7 +831,7 @@ def run():
 @app.route("/close", methods=["POST"])
 def close():
     global LAST_RESULTS
-    close_browser()
+    asyncio.run(close_browser_async())
     LAST_RESULTS["status"] = "CLOSED"
     LAST_RESULTS.setdefault("diag", {"events": []})
     LAST_RESULTS["diag"].setdefault("events", [])
@@ -965,6 +843,7 @@ def close():
 
 @app.route("/export_pdf", methods=["POST"])
 def export_pdf():
+    # le front doit envoyer JSON: { offers: [...] }
     data = request.get_json(force=True, silent=False)
     offers = data.get("offers", [])
     offers_sorted = sort_offers_by_price_dicts(offers)
@@ -979,5 +858,8 @@ def export_pdf():
 
 
 # -----------------------------
-# MAIN
+# LOCAL RUN (Render utilise gunicorn, tu ne supprimes pas ça)
 # -----------------------------
+if __name__ == "__main__":
+    # En local seulement. Sur Render: gunicorn -b 0.0.0.0:$PORT app:app
+    app.run(host="0.0.0.0", port=PORT, debug=not IS_RENDER)
