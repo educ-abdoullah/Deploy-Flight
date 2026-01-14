@@ -353,13 +353,10 @@ async def ensure_browser_async(diag: Dict[str, Any]):
     })
 
     pw = await async_playwright().start()
-    context = pw.chromium.launch_persistent_context(
-    user_data_dir=PW_PROFILE_DIR,
-    channel="chrome",
-    headless=False,
-    viewport={"width": 1400, "height": 900},
-    args=["--no-first-run", "--no-default-browser-check", "--disable-extensions"]
+    context = pw.chromium.launch(
+    headless=True
 )
+
 
 
     STATE["playwright"] = pw
