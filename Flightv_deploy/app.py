@@ -3,8 +3,6 @@
 # - Paramètre Front: exclure compagnies (AI/BA/LH) => Kayak fs=airlines=-AI,BA,LH,flylocal;...
 # - Export PDF (tableau) AVEC liens cliquables
 # - Envoi Outlook automatique HTML (tableau propre + liens)
-#   From: abd.flight-alertes@outlook.com
-#   To:   educ.abdoullah@gmail.com ; 605001@gmail.com
 #   Subject: inclut la date du jour
 #   Top 8: pas deux offres avec même compagnie+jour de départ
 #
@@ -60,8 +58,8 @@ DEFAULT_RETURN_END   = "2026-08-30"
 DEFAULT_EXCLUDE_AIRLINES = ["AI", "BA", "LH"]  # [] si vous voulez aucune exclusion par défaut
 
 # Outlook
-OUTLOOK_SENDER_SMTP = "abd.flight-alertes@outlook.com"
-OUTLOOK_TO = ["605001@gmail.com","bayern91130@yahoo.com","ztazmil@gmail.com","cr7.mujeebur@gmail.com"]
+OUTLOOK_SENDER_SMTP = "aaa@aa"
+OUTLOOK_TO = ["aa@aa"]
 
 # Kayak base filters (sans airlines) , "605001@gmail.com"
 KAYAK_FS_BASE = "layoverdur=-560;stops=-2;cfc=1"
@@ -773,7 +771,7 @@ def _mk_outlook_body_top8_html(offers_sorted: List[Dict[str, Any]]) -> str:
             <!-- Header -->
             <div style="padding:18px 18px 12px 18px;border-bottom:1px solid #edf0f5;">
               <div style="font-family:Segoe UI, Arial;font-size:14px;color:#111111;line-height:1.45;">
-                Bonjour MUJEEBUR ET ZIAVOUDINE,<br>
+                Bonjour  ET ,<br>
                 Je suis <b>JARVIS</b>, l’assistant informatique d’Abdoullah.
               </div>
 
@@ -1227,7 +1225,7 @@ def export_pdf_and_outlook_send():
         f.write(pdf_bytes)
 
     today = dt.datetime.now().strftime("%Y-%m-%d")
-    subject = f"Vols Kayak MUJ ZIA - {today}"
+    subject = f"Vols Kayak  - {today}"
 
     # IMPORTANT: HTML body (tableau propre)
     html_body = _mk_outlook_body_top8_html(offers_sorted)
@@ -1249,5 +1247,3 @@ def export_pdf_and_outlook_send():
 # -----------------------------
 # MAIN
 # -----------------------------
-if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=False, threaded=False)
