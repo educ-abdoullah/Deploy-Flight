@@ -259,39 +259,23 @@ async def extract_min_cards(page: APage, url: str, d1: str, d2: str, diag: Dict[
 # -----------------------------
 # KAYAK URL BUILD (CORRECT)
 # -----------------------------
-def build_kayak_fs(base_fs: str, exclude_airlines: Optional[List[str]] = None) -> str:
-    """
-    Construit la valeur fs EXACTEMENT au format Kayak.
 
-    Exemple attendu si exclusions = ["AI","BA","LH"]:
-      airlines=-AI,BA,LH,flylocal;layoverdur=-560;stops=-2;cfc=1
+from urllib.parse import quote
 
-    Si aucune exclusion:
-      layoverdur=-560;stops=-2;cfc=1
-    """
-    exclude_airlines = exclude_airlines or []
-    ex = [a.strip().upper() for a in exclude_airlines if a and a.strip()]
-    # whitelist (si vous voulez permettre plus tard d'autres codes, supprimez ce filtre)
+def build_kayak_fs(base_fs: str, exclude_airlines: list[str]) -> str:
+    ex = [a.strip().upper() for a in (exclude_airlines or []) if a.strip()]
     ex = [a for a in ex if a in ("AI", "BA", "LH")]
-
     if ex:
-        airlines_part = "airlines=-" + ",".join(ex) + ",flylocal"
-        return f"{airlines_part};{base_fs}"
+        return f"airlines=-{','.join(ex)},flylocal;{base_fs}"
     return base_fs
 
-def build_kayak_url(origin: str, dest: str, d1: str, d2: str, pax: int,
-                   base_fs: str, exclude_airlines: Optional[List[str]] = None) -> str:
-    """
-    Construit l’URL Kayak avec fs encodé comme l’exemple correct:
-    airlines%3D-AI%2CBA%2CLH%2Cflylocal%3Blayoverdur%3D-560%3Bstops%3D-2%3Bcfc%3D1
-    """
+def build_kayak_url(origin, dest, d1, d2, pax, base_fs, exclude_airlines):
     fs = build_kayak_fs(base_fs, exclude_airlines)
-
-    # On encode TOUT, sauf le '-' (sinon airlines=-... est cassé)
-    fs_encoded = quote(fs, safe='-')
-
+    fs_encoded = quote(fs, safe='-')   # garde seulement '-' non encodé
     base = f"https://www.kayak.fr/flights/{origin}-{dest}/{d1}/{d2}/{pax}adults"
     return f"{base}?sort=price_a&fs={fs_encoded}"
+
+
 
 # -----------------------------
 # OFFER MODEL
@@ -364,9 +348,39 @@ async def ensure_browser_async(diag: Dict[str, Any]):
     STATE["initialized"] = True
 
 
-def ensure_browser(diag: Dict[str, Any]):
-    # wrapper sync -> async (on garde le même nom public si tu veux)
-    asyncio.run(ensure_browser_async(diag))
+PW_PROFILE_DIR = os.environ.get("PW_PROFILE_DIR") or (
+    r"C:\Users\mrabd\AppData\Local\flight-alert-playwright-profile"
+    if os.name == "nt" else "/tmp/flight-alert-playwright-profile"
+)
+
+def ensure_browser(diag):
+    if STATE["initialized"] and STATE["context"] and STATE["page"]:
+        return
+
+    pw = sync_playwright().start()
+
+    launch_kwargs = dict(
+        user_data_dir=PW_PROFILE_DIR,
+        headless=(os.environ.get("RENDER") == "true"),  # headless sur Render
+        viewport={"width": 1400, "height": 900},
+        args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-extensions",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ],
+    )
+
+    # Windows: tu peux garder Chrome si tu veux
+    if os.name == "nt":
+        context = pw.chromium.launch_persistent_context(channel="chrome", **launch_kwargs)
+    else:
+        context = pw.chromium.launch_persistent_context(**launch_kwargs)
+
+    page = context.new_page()
+    STATE.update({"playwright": pw, "context": context, "page": page, "initialized": True})
+
 
 
 async def close_browser_async():
