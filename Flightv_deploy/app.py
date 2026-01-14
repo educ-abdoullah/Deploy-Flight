@@ -1,3 +1,4 @@
+from __future__ import annotations
 # app.py — Version COMPLETE (corrigée)
 # - Scrape Kayak (texte cards) + anti pub
 # - Paramètre Front: exclure compagnies (AI/BA/LH) => Kayak fs=airlines=-AI,BA,LH,flylocal;...
@@ -38,7 +39,6 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
 
 app = Flask(__name__)
-from __future__ import annotations
 
 # -----------------------------
 # CONFIG
